@@ -2,8 +2,9 @@
 
 **Status (2026-10-20):**
 - M0 (architecture and documentation): direction approved 2026-10-20; documents **in final review**.
-- **Git:** initialised locally 2026-10-20 (branch `main`, remote `origin` added). No commits or pushes yet; each needs approval.
-- **Not yet authorised:** commits and pushes, installing dependencies, writing application code, starting M1.
+- **Git:** initialised 2026-10-20. Branch `main`; the initial docs commit `afad04e` is pushed to `origin`. Further commits and pushes each need approval.
+- **Dependencies:** installed 2026-10-20 with npm. Versions are pinned exactly in `package.json`, and `package-lock.json` is generated (setup not yet committed).
+- **Not yet authorised:** writing application code, starting M1, recording the fixture pin.
 - **Remote decided (2026-10-20):** `https://github.com/GauJosh/github-actions-ui`. As of that date it is empty and **private**. D3 says open source first, so the visibility change is the user's call.
 - No application code exists. No milestone after M0 has started.
 - Each milestone starts only after the previous gate is approved.
