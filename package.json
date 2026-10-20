@@ -15,7 +15,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "fixtures:fetch": "node --disable-warning=ExperimentalWarning tools/fixtures/fetch.ts",
+    "fixtures:lock": "node --disable-warning=ExperimentalWarning tools/fixtures/lock.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "5.104.1",

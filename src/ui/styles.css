@@ -1,0 +1,257 @@
+:root {
+  --paper: #f6f7f9;
+  --surface: #ffffff;
+  --ink: #1b2330;
+  --muted: #5d6676;
+  --line: #d8dde5;
+  --accent: #1f5fae;
+  --fail: #c62f2f;
+  --pass: #1d7a45;
+  --warn: #9a6200;
+  --hl: #fff4c2;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #10141b;
+    --surface: #171c25;
+    --ink: #e5e9f0;
+    --muted: #9aa4b4;
+    --line: #2c3442;
+    --accent: #79a9ea;
+    --fail: #f07a7a;
+    --pass: #6cc493;
+    --warn: #e2b25a;
+    --hl: #3d3514;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+a {
+  color: var(--accent);
+}
+button {
+  font: inherit;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+input {
+  font: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  min-width: 0;
+}
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 16px 48px;
+}
+.banner {
+  margin: 0 -16px;
+  padding: 8px 16px;
+  background: var(--warn);
+  color: #fff;
+  font-weight: 600;
+}
+.banner a {
+  color: #fff;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.topbar h1 {
+  font-size: 20px;
+}
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.panel h2,
+.panel h3,
+.panel h4 {
+  margin: 4px 0;
+}
+form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+form input {
+  flex: 1 1 280px;
+}
+.meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+.mono,
+.tx,
+.ln {
+  font-family: var(--mono);
+}
+.muted,
+.note {
+  color: var(--muted);
+  font-size: 13px;
+}
+.badge {
+  font: 600 11px var(--mono);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+}
+.badge-failure,
+.badge-timed_out,
+.badge-startup_failure {
+  color: var(--fail);
+}
+.badge-cancelled {
+  color: var(--warn);
+}
+.badge-success {
+  color: var(--pass);
+}
+.jobs {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+  display: grid;
+  gap: 4px;
+}
+.job.selected > a {
+  font-weight: 700;
+}
+.steps {
+  margin: 2px 0 4px;
+  padding-left: 28px;
+  font-size: 13px;
+}
+.state {
+  padding: 8px 0;
+}
+.state-error {
+  color: var(--fail);
+}
+.status {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin: 8px 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.status-complete {
+  border-color: var(--pass);
+}
+.status-incomplete,
+.status-failed,
+.status-processing-failed,
+.status-expired {
+  border-color: var(--fail);
+}
+.status-tail-only,
+.status-cancelled {
+  border-color: var(--warn);
+}
+.tail-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.tail-lines li,
+.row {
+  display: flex;
+  gap: 10px;
+  white-space: pre;
+  font-size: 12.5px;
+  line-height: 20px;
+}
+.tail-lines .ln,
+.row .ln {
+  flex: 0 0 64px;
+  text-align: right;
+  color: var(--muted);
+  text-decoration: none;
+  user-select: none;
+}
+.log-scroll {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 8px 0;
+}
+.row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 20px;
+}
+.row.highlighted {
+  background: var(--hl);
+}
+.ts {
+  color: var(--muted);
+}
+.hit-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  list-style: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.diagnostics dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+}
+.diagnostics dd {
+  margin: 0;
+  font-family: var(--mono);
+}
+.events {
+  font: 12px var(--mono);
+  max-height: 220px;
+  overflow: auto;
+}

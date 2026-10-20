@@ -101,7 +101,7 @@ flowchart LR
 | `domain/extraction` | Versioned rule set, wrapper demotion, deduplication, ranking, grouping keys | worker · Node | yes |
 | `domain/types` | Shared domain types (§5.3) | all | yes |
 | `ui` | Views from the Phase 2 UX proposal (local), the virtualised log view, and an explicit component for every "unavailable" state | main | no |
-| `fixture-mode` | MSW handlers serving data from a pinned commit of `gha-ui-fixtures` | main | no |
+| `fixture-mode` | A local fixture API (`tools/fixture-server`, mounted in the Vite dev and preview servers) serves the pinned corpus with GitHub-shaped routes, HEAD and byte ranges. The app reaches it through a fixture transport that refuses any other URL and sends no token (see §11.2) | server + main | no |
 
 **Boundary rules, enforced by lint:**
 - `src/domain` imports nothing from `ui`, `github`, `logs/download` or any browser API.
@@ -355,9 +355,9 @@ Every case below renders as a designed, explained state, never as an error scree
 | Unit (pure domain) | Mapping v2, checks, risk flag, extraction rules, grouping, baseline tiers, classification, the inputs-unavailable invariant | `gha-ui-fixtures` at a pinned commit (s06, s12, s14, s15, s16, …) | Vitest |
 | Contract | GitHub client against recorded responses: pagination, ETag/304, 401/403/404/410, rate limits, redirect classification, GET/HEAD only | Fixture JSON + hand-written errors | Vitest + mocked fetch |
 | Loader and worker | Tail/body/append, backpressure, resume offsets, `incomplete`, `signed-url-rejected`, the range-refusal fallback (mock only), A8 threshold behaviour, A9 restart and limit, completeness checks, regression checks against fixture reference CRC32 | s09 + synthetic logs; mock API and blob | Vitest + one Playwright browser test |
-| Secrets hygiene | No token in storage, URL or console; signed-URL marker never surfaced | Mock | Playwright |
+| Secrets hygiene | No token in storage, URL or console (Playwright). Token dropped on the API → log-host redirect, host-only diagnostics, signed-URL marker never surfaced (Vitest + MSW through the live transport; see §11.2) | Mock | Playwright, Vitest + MSW |
 | CSP | App policy enforced in preview; worker `connect-src 'none'`; blocked host produces a violation | Mock | Playwright |
-| UI / E2E | Journeys from the Phase 2 UX proposal (local) and every §9 state, in fixture mode (no token) | Fixture corpus | Playwright (Chromium) + MSW |
+| UI / E2E | Journeys from the Phase 2 UX proposal (local) and every §9 state, in fixture mode (no token) or live mode against a mocked API (`page.route`). The test browser cannot resolve non-local hosts | Fixture corpus, mocks | Playwright (Chromium) |
 | Performance trend | Tail evidence ≈ 1 s target; 44 MB searchable without long tasks. Recorded as a trend, non-blocking | s09 | Playwright traces |
 | Extraction regression | Rule changes must not regress fixture truths. Third-party log excerpts (Q8) are local research material, never committed, and run only locally until they are replaced by synthetic fixtures (roadmap V1) | Synthetic fixtures (CI) + local excerpts | Node harness |
 | Held-out evaluation (S2b) | Only under the Q10 protocol; never tuned against | Fresh draw per round | Node harness + manual grading |
@@ -378,9 +378,12 @@ github-actions-ui/
       worker/        entry, protocol, store, index, search, rows
     domain/          pure: mapping/, extraction/ (rules@v1), grouping/, types.ts
     ui/              views/, components/, states/, log-view/
-    fixture-mode/    MSW handlers over gha-ui-fixtures data
+    app/             environment: live or fixture mode, wiring
     config.ts        LARGE_LOG_SOFT_LIMIT_BYTES, MAX_WORKER_RESTARTS, tail size, backpressure marks
-  tools/eval/        Node harness: mapping checks, extraction regression, held-out runner
+  tools/fixtures/    lockfile, fetch and lock scripts (§11.1)
+  tools/fixture-server/  fixture-mode API over the pinned corpus, plus a synthetic 46 MB log for A8
+  tools/vite/        security headers (CSP) for preview, fixture-server plugin
+  tools/eval/        Node harness: mapping checks, extraction regression, held-out runner (later milestones)
   tests/e2e/         Playwright (Chromium)
   docs/              ARCHITECTURE.md, ROADMAP.md
   LICENSE            Apache-2.0
@@ -409,12 +412,34 @@ Fixtures come from a **fetch script pinned to an immutable commit SHA**. Each do
   - a size or SHA-256 mismatch;
   - a malformed lockfile.
 
-  Partial files are deleted. Tests and fixture mode that need missing or unverified fixtures **fail** with "Fixtures not prepared: run `tools/fixtures/fetch`". They never skip silently.
+  Partial files are deleted. Tests and fixture mode that need missing or unverified fixtures **fail** with "Fixtures not prepared: run `npm run fixtures:fetch`". They never skip silently.
 - **Offline development:**
   - Run the fetch once while online. `.fixtures/<commit>/` is then reused with no network access.
   - Alternatively, `tools/fixtures/fetch --from <path-to-local-clone>` copies the files out of a local clone and checks every SHA-256 against the lockfile. It does not trust the clone's checked-out branch: it reads the files at the pinned commit, so the clone must contain that commit.
   - The README will document both paths.
 - **Scope of the SHA-256 check.** It confirms that each file is byte-identical to what the lockfile recorded at that commit. It does not vouch for the content beyond that.
+
+### 11.2 Implementation notes from M1 (for review)
+
+- **Fixture mode is served by a local fixture API, not by in-browser MSW handlers.**
+  - It is a small Node middleware in the Vite dev and preview servers.
+  - It streams real HTTP responses with HEAD and byte ranges, so the loader is exercised the same way as against GitHub, and no second copy of a log is held on the main thread.
+  - It refuses to serve anything if `.fixtures/` does not match the lockfile.
+  - MSW is used for client contract tests in Node.
+  - Static hosting (deferred) would need another way to serve fixtures.
+- **Fixture mode is compiled out of production builds.**
+  - A compile-time flag, `__FIXTURE_MODE__`, is true only for the dev server, unit tests, and an explicit test build (`GHA_UI_FIXTURES=1`, output in `dist-fixtures/`, used by Playwright).
+  - Ordinary builds contain no fixture transport, fixture UI, fault switches or worker fault handler, and ordinary `vite preview` mounts no fixture routes. `tests/unit/build-boundary.test.ts` checks this by building and scanning the bundle, with a fixture build as the control case.
+  - In a production build, `?mode=fixtures` shows an explicit "not available in this build" state and makes no request. It never falls back to live mode, and live mode never uses the fixture transport.
+- **Fixture-mode fault injection.** `?mode=fixtures&fixture-faults=worker-failures-N` makes the first N log workers fail halfway through the body. It is used by the A9 end-to-end tests, exists only where fixture mode is compiled in, and is read only in fixture mode.
+- **Unit tests fail closed on network access.**
+  - A Vitest setup file (`tests/unit/network-guard.ts`) blocks every outbound TCP/TLS connection at `net.Socket.prototype.connect`, not by hostname, so raw IPs and proxy variables cannot bypass it.
+  - MSW-mocked requests still work: MSW's in-process mock connection is recognised and allowed. Unhandled requests are rejected by MSW, and a passthrough is blocked by the guard.
+  - If MSW changes these internals, mocked tests fail rather than reach the network.
+  - The browser tests rely on hostname resolution being disabled. That leaves raw-IP URLs and a system proxy as known limitations there.
+- **Redirect coverage.** Playwright does not route the request that follows a redirect it fulfilled itself. So the browser tests serve live-mode logs directly from the mocked API, and the API → log-host redirect is tested in Node through the real live transport (MSW): the token is dropped, diagnostics keep only the host, and the signed-URL marker is never surfaced. Experiment E9 showed the same token behaviour in Chrome with two real origins.
+- **Blob-host CSP check.** The end-to-end CSP test removes `api.github.com` from `connect-src` and checks that the request is blocked. It cannot remove the blob host meaningfully without the redirect (see above). Blob-host enforcement was verified in experiment E9.
+- **Dev server has no CSP.** The policy in §7.3 is applied by `vite preview` (production build), which the end-to-end tests use.
 
 ## 12. Open risks (not validated)
 

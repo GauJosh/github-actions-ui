@@ -7,6 +7,7 @@ docs/proposals/
 # Dependencies and build output
 node_modules/
 dist/
+dist-fixtures/
 
 # Fixtures fetched by tools/fixtures/fetch (pinned in fixtures.lock.json)
 .fixtures/

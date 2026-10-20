@@ -1,13 +1,15 @@
 # Roadmap — GitHub Actions UI
 
 **Status (2026-10-20):**
-- M0 (architecture and documentation): direction approved 2026-10-20; documents **in final review**.
-- **Git:** initialised 2026-10-20. Branch `main`; the initial docs commit `afad04e` is pushed to `origin`. Further commits and pushes each need approval.
-- **Dependencies:** installed 2026-10-20 with npm. Versions are pinned exactly in `package.json`, and `package-lock.json` is generated (setup not yet committed).
-- **Not yet authorised:** writing application code, starting M1, recording the fixture pin.
-- **Remote decided (2026-10-20):** `https://github.com/GauJosh/github-actions-ui`. As of that date it is empty and **private**. D3 says open source first, so the visibility change is the user's call.
-- No application code exists. No milestone after M0 has started.
-- Each milestone starts only after the previous gate is approved.
+- **M0** (architecture and documentation): **complete**. `docs/ARCHITECTURE.md` and this roadmap were approved 2026-10-20.
+- **M1** (first vertical slice): **complete**, accepted 2026-10-20.
+  - Automated tests: 72 unit and contract tests, and 7 Chromium end-to-end tests.
+  - Live smoke test: passed, run by the user with their own token.
+  - Security follow-ups applied before acceptance: fixture mode is compiled out of production builds, and all unit tests fail closed on network access (ARCHITECTURE §11.2).
+- **Fixture pin:** `184ede06780166a90bdb173adda9a23a5b6545c4`, recorded in `fixtures.lock.json`.
+- **Repository:** `https://github.com/GauJosh/github-actions-ui`, **private**. Open source first is the intended direction. Publishing waits for a separate decision after the first vertical slice is reviewed.
+- **Next:** M2 has not started. Each milestone starts only after its gate is approved. Q2 and Q10 remain open.
+- Commits and pushes each need approval.
 
 **References:**
 - Scope and success criteria (S1–S7): the **project brief**, maintained locally and not published in this repository. The criteria this roadmap uses are restated where they are applied.
@@ -52,7 +54,7 @@ flowchart LR
 
 ---
 
-## M0: Architecture and documentation (in review)
+## M0: Architecture and documentation (complete)
 
 **Deliverables:**
 - `docs/ARCHITECTURE.md`, with decisions A1–A9 (A8 provisional);
@@ -70,7 +72,7 @@ flowchart LR
 
 ---
 
-## M1: First vertical slice — open a failed run and read its log tail-first
+## M1: First vertical slice — open a failed run and read its log tail-first (complete)
 
 **Goal:** prove the core technical path in a thin slice:
 - connect with a token, or use fixture mode;
