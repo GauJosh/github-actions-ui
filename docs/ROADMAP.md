@@ -1,0 +1,329 @@
+# Roadmap — GitHub Actions UI
+
+**Status (2026-10-20):**
+- M0 (architecture and documentation): direction approved 2026-10-20; documents **in final review**.
+- **Git:** initialised locally 2026-10-20 (branch `main`, remote `origin` added). No commits or pushes yet; each needs approval.
+- **Not yet authorised:** commits and pushes, installing dependencies, writing application code, starting M1.
+- **Remote decided (2026-10-20):** `https://github.com/GauJosh/github-actions-ui`. As of that date it is empty and **private**. D3 says open source first, so the visibility change is the user's call.
+- No application code exists. No milestone after M0 has started.
+- Each milestone starts only after the previous gate is approved.
+
+**References:**
+- Scope and success criteria (S1–S7): the **project brief**, maintained locally and not published in this repository. The criteria this roadmap uses are restated where they are applied.
+- Design: `docs/ARCHITECTURE.md`.
+
+**Rules that apply to every milestone:**
+- Read-only: no write API calls.
+- No AI features, backend or persistence.
+- The token is held in memory only.
+- No tokens or signed URLs in code, tests, logs or docs. Diagnostics record hostnames only.
+- Changes to the fixture repository:
+  - verify each edited file first;
+  - run the secret scan as a separate step before any push;
+  - never chain edit, commit and push so that a failed step is skipped silently.
+- Git operations (initialising, committing, pushing) and adding dependencies each need explicit approval.
+
+## Tracks
+
+| Track | Milestones | Purpose |
+|---|---|---|
+| **Architecture and documentation** | M0 | Agree on the design before any code |
+| **First vertical slice** | M1 | Prove the riskiest path end to end: token → run → tail-first log in the worker → log view |
+| **Subsequent MVP capabilities** | M2–M5 | Log exploration, failure overview and evidence, finding runs, comparison |
+| **Evaluation** | V1–V4 | Regression corpus, held-out protocol (Q10), measurement against S1–S7, validation of open risks |
+
+```mermaid
+flowchart LR
+  M0[M0 Architecture & docs] --> M1[M1 First vertical slice]
+  M1 --> M2[M2 Log exploration]
+  M2 --> M3[M3 Failure overview & evidence]
+  M1 --> M4[M4 Finding runs]
+  M1 --> M5[M5 Comparison]
+  V1[V1 Regression corpus] --> M3
+  Q2{{Q2 PAT tests - user}} -.-> M3
+  Q2 -.-> M4
+  V2[V2 Q10 protocol] --> V3[V3 MVP evaluation]
+  M3 --> V3
+  M4 --> V3
+  M5 --> V3
+  M2 --> V4[V4 Risk validation]
+```
+
+---
+
+## M0: Architecture and documentation (in review)
+
+**Deliverables:**
+- `docs/ARCHITECTURE.md`, with decisions A1–A9 (A8 provisional);
+- this roadmap;
+- the local project brief updated for consistency (not published);
+- the reviewed architecture proposal, revision 3 (kept locally, not part of this repository).
+
+**Acceptance criteria:**
+- The user approves ARCHITECTURE.md and ROADMAP.md.
+- The CSP wildcard risk, the untested range-refusal fallback, browser compatibility, larger-log memory and the step-mapping limitations are recorded as **open risks**, not as validated.
+- Q2 and Q10 are recorded as open.
+- No tokens or signed URLs appear in any document.
+
+**Dependencies:** none.
+
+---
+
+## M1: First vertical slice — open a failed run and read its log tail-first
+
+**Goal:** prove the core technical path in a thin slice:
+- connect with a token, or use fixture mode;
+- paste a run URL;
+- see the failed jobs and steps from the API;
+- open a failed job's log: tail evidence first, then the full log in the worker;
+- view, scroll and search it, with every loader failure state explicit.
+
+**In scope:**
+- Project scaffold:
+  - React 18, Vite, TypeScript, Vitest, Playwright;
+  - lint rules for module boundaries;
+  - the Apache-2.0 LICENSE.
+- `auth`: `PatProvider` (memory only, Disconnect).
+- `github`:
+  - client for run, jobs and job log;
+  - status codes mapped to domain states;
+  - GET and HEAD only.
+- Fixture fetch script and `fixtures.lock.json` (ARCHITECTURE §11.1): pinned to a commit SHA, with per-file SHA-256 checks, explicit failures, and an offline `--from` path.
+- Fixture mode (A5) using the pinned fixtures, with the "Demo data" banner.
+- `logs/download`, the full loader from ARCHITECTURE §6:
+  - HEAD, tail, body and append;
+  - backpressure;
+  - retry and resume;
+  - the `signed-url-rejected`, `interrupted`, `incomplete`, `cancelled` and `expired` states;
+  - the A8 threshold;
+  - A9 recovery with its restart limit;
+  - completeness checks: byte counts and range continuity (not cryptographic verification; ARCHITECTURE §6.6).
+- `logs/worker`: the chunked store, line index, CRC32, rows and substring search.
+- `ui`:
+  - Connect view;
+  - run view listing failed jobs and steps from the API;
+  - virtualised log view with tail lines shown first;
+  - line deep links using the URL fragment, which never contains the token;
+  - every loader state from ARCHITECTURE §9.
+- CSP for the preview build, and the worker's `connect-src 'none'`.
+
+**Out of scope:** step mapping, extraction and candidates, annotations, ANSI and groups, the run list and PR entry, comparison.
+
+**Acceptance criteria:**
+1. **Fixture mode, s09 failed run:**
+   - the failed job and step are listed from API data;
+   - tail lines are visible before the body download completes;
+   - the full log loads and passes the completeness checks (byte count = `Content-Length`, contiguous ranges);
+   - a regression test confirms the CRC32 equals the fixture reference. This is a loader-correctness check, not verification of the content;
+   - the UI never labels a log "verified".
+   - any line is reachable by scroll and by deep link;
+   - substring search finds the known lines.
+2. **Loader states** are covered by automated tests against a mock API and blob:
+   - interrupted → resumed exactly;
+   - repeated failure → `incomplete`, showing bytes received (the test also checks the prefix against the fixture reference CRC32);
+   - 403 from the blob host → `signed-url-rejected` → retried;
+   - 410 → expired;
+   - cancel → resume;
+   - 200 instead of 206 → full-stream fallback (mock only; recorded as unvalidated against GitHub);
+   - backpressure keeps in-flight data at or below 8 MiB plus one chunk.
+3. **A8:** a synthetic log above `LARGE_LOG_SOFT_LIMIT_BYTES`:
+   - ends `tail-only` with the evidence visible;
+   - shows search and steps as unavailable, with the reason;
+   - loads fully only after "Load full log".
+   - Changing the constant changes the behaviour with no other code change.
+4. **A9:**
+   - an injected worker failure shows "Reloading log after an internal error" with progress, and ends complete (the regression test also checks the fixture CRC32);
+   - failures beyond `MAX_WORKER_RESTARTS` end in `processing-failed`, with "Retry" and "Open log on GitHub";
+   - "Retry" recovers.
+5. **Secrets hygiene**, by automated test:
+   - the token is never in `localStorage`, `sessionStorage`, IndexedDB, the URL or console output;
+   - a marker placed in the mock signed-URL query string never appears in console, diagnostics or error text;
+   - diagnostics show the blob **host** only.
+6. **Read-only:** a test asserts that only GET and HEAD are issued.
+7. **CSP:**
+   - the preview build loads logs under the ARCHITECTURE §7.3 policy;
+   - the worker cannot `fetch`;
+   - removing the blob host blocks the log fetch.
+8. **Main-thread responsiveness** while loading s09 is recorded (long tasks and heartbeat lateness), as a non-blocking trend.
+9. **Live smoke (manual, done by the user with their own token in the running app):** the same journey on a failed `gha-ui-fixtures` run.
+10. **Fixtures:** the fetch script retrieves the files at the pinned SHA and checks each SHA-256.
+    - Tests show that a hash mismatch, a missing file, an HTTP error and a branch name used as the pin each fail with an explicit message and no partial files.
+    - Fixture-dependent tests fail (never skip) when fixtures are missing.
+    - `--from <local clone>` works offline.
+
+**Dependencies:**
+- M0 approved.
+- **Explicit user authorisation to start M1**, separately covering:
+  - initialising Git;
+  - installing dependencies;
+  - writing application code.
+- Fixture pinning is **decided**: a fetch script pinned to a commit SHA with SHA-256 checks (ARCHITECTURE §11.1). The pinned SHA must be chosen.
+- Q2 does **not** block M1: fixture mode needs no token, and live smoke uses the user's own repository with the provisional permissions.
+
+---
+
+## M2: Log exploration
+
+**In scope:**
+- ANSI colours;
+- `::group::` structure;
+- head and tail navigation;
+- opt-in regex search with a time budget;
+- scaled scrolling above ~1.5M lines;
+- step mapping v2 with checks C1–C4 and the runtime risk flag, and a step rail with the "step boundaries approximate" and "unavailable" states;
+- an in-memory cache of live workers (at most 3, least recently used; an evicted log is re-downloaded).
+
+**Acceptance criteria:**
+1. **Mapping v2 on fixtures:**
+   - passes every s16 assertion (pass and fail runs);
+   - passes the generic checks on the whole fixture corpus;
+   - the risk flag fires on start-action/end-action-stripped copies and on 0 real fixture jobs.
+2. The "approximate" warning appears whenever a check or the flag trips. It is never suppressed, and the docs describe v2 as **corpus-validated only**.
+3. A 1.7M-line synthetic log is navigable to any line with scaled scrolling.
+4. ANSI and group rendering matches the fixture expectations.
+
+**Dependencies:** M1.
+
+---
+
+## M3: Failure overview and evidence
+
+**In scope:**
+- the failure overview as the primary screen;
+- annotations, aggregated;
+- extraction `rules@v1`, run on failed step segments plus annotations;
+- candidates labelled as **hypotheses**, with evidence type and a line link;
+- the failed-step tail, always shown;
+- cross-job grouping of identical candidates;
+- R3 non-success classification, with "reason unknown";
+- the supporting job graph;
+- read-only deep links to GitHub.
+
+**Acceptance criteria:**
+1. On the regression corpus, extraction meets the fixture truths, and rule changes are gated by the regression suite.
+2. The matrix scenarios (s03, KAI) each show one group listing the affected jobs (S3).
+3. The s06 timeout is classified as timed out with its evidence. A case with no evidence shows "reason unknown".
+4. No copy anywhere states a verified cause. A test asserts that the label "hypothesis" is present.
+5. Annotations unavailable because of permissions show an explicit state.
+
+**Dependencies:**
+- M2 (segments).
+- V1 (regression corpus).
+- **Q2** for whether annotations need Checks: Read. The milestone can proceed with a degraded state if Q2 is still open.
+
+---
+
+## M4: Finding runs
+
+**In scope:**
+- a repository picker;
+- a recent-runs list filterable by failure, branch and PR;
+- pasting a PR URL to list the Actions runs at its head SHA;
+- non-Actions checks listed as "Not supported: open on GitHub";
+- "No Actions runs for this commit".
+
+**Acceptance criteria:**
+1. Each entry path reaches the overview in fixture mode.
+2. Every unsupported or empty case renders its explicit state.
+3. The request cost stays within the E3 budget (S7).
+
+**Dependencies:**
+- M1.
+- **Q2** tests D1 and D2, which decide whether Pull requests: Read and Checks: Read are needed and what the onboarding copy says.
+
+---
+
+## M5: Comparison
+
+**In scope:**
+- baseline tier A (same branch), then tier B (default branch), then an explained "no comparison";
+- a manual later-run option, labelled as such;
+- copy for the same-commit case: "consistent with … not proof";
+- the commit range, with a GitHub compare link;
+- workflow-file change detection and a YAML diff;
+- job and step outcome and duration deltas;
+- "Inputs: not available from the GitHub API";
+- R7 previous-run comparison, only when no baseline exists.
+
+**Acceptance criteria:**
+1. **S4 on input-only pairs:** s02–s06 and s08–s12 report "no change in commits or workflow file; inputs not available", with **zero causal claims**.
+2. s13 detects the workflow change.
+3. The KAI `main` failure shows "no comparison" and offers the later run, labelled as such.
+4. The `inputs` field cannot be filled by inference (type-level and unit test).
+
+**Dependencies:** M1. Not blocked by Q2.
+
+---
+
+## Evaluation track
+
+### V1: Regression corpus
+
+Re-express the six third-party log excerpts (local research material under the Q8 conditions; never committed or published) as **synthetic** fixtures in `gha-ui-fixtures`:
+- `mypy-file-line-error`
+- `pytest-collection-importerror`
+- `rustc-error-code`
+- `test-timed-out`
+- `meson-probe-noise`
+- `node-test-cross-mark`
+
+Then delete the local excerpts.
+
+**Acceptance criteria:**
+- Each case is reproduced synthetically, with no third-party text.
+- Every edited file is verified, and the secret scan runs as a separate step before the push.
+- The local excerpts are deleted.
+
+**Dependencies:**
+- Needed before M3 rule work.
+- User approval for the fixture-repo change.
+
+### V2: Q10 held-out protocol
+
+Write the protocol **before** any held-out set is drawn or inspected. It covers:
+- the sampling frame and size;
+- a draw procedure that can be reproduced but isn't seen until grading;
+- the grading rubric;
+- who grades, and blinding;
+- storage and deletion under the Q8 conditions;
+- single use: a set becomes regression material once it has been looked at.
+
+**Acceptance criteria:** the user approves the protocol. Q10 is closed only then.
+
+**Dependencies:** none, so it can run in parallel with M1–M5. It must finish before V3.
+
+### V3: MVP evaluation (Phase 6)
+
+Measure S1–S7 against the native UI on ≥15 corpus failures:
+- S2a: evidence visibility;
+- S2b: top-3 accuracy, on a fresh held-out set drawn under V2;
+- S2c: cause identification, recorded per session.
+
+**Acceptance criteria:**
+- Results are recorded per criterion, with held-out and regression results reported separately.
+- No tuning against the held-out set.
+
+**Dependencies:** M3, M4, M5 and V2.
+
+### V4: Validation of open risks
+
+| Item | Acceptance criterion |
+|---|---|
+| Larger-log memory | Worker memory measured with the chunked store on at least two sizes above 44 MB (e.g. synthetic ~88 MB and ~176 MB). A8 threshold reviewed against the results. Memory is still not described as bounded unless a measurement shows it |
+| Browser compatibility | Firefox and Safari checked for the logs redirect, HEAD, ranges, transfer and CSP. Results recorded; no claim before then |
+| Range-refusal fallback | Remains mock-tested only. Recorded as unvalidated against GitHub unless a real refusal is ever observed |
+| Hardware and network spread | Tail-evidence and full-load timings measured on at least one more machine or network |
+
+**Dependencies:** M2 (the full loader and worker in the real app).
+
+---
+
+## Not on this roadmap
+
+These are scheduled only after the MVP is validated, and each requires its own decision:
+- static hosting;
+- OAuth login (U2);
+- line-by-line log diff (stretch);
+- v1.x candidates (incident correlation, flake hints, test-report parsing, opt-in session token persistence);
+- the browser extension;
+- the history product (U6).

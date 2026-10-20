@@ -1,0 +1,17 @@
+# Local-only project material (not published)
+CLAUDE.md
+docs/PROJECT_BRIEF.md
+docs/DISCOVERY.md
+docs/proposals/
+
+# Dependencies and build output
+node_modules/
+dist/
+
+# Fixtures fetched by tools/fixtures/fetch (pinned in fixtures.lock.json)
+.fixtures/
+
+# Test output
+coverage/
+playwright-report/
+test-results/
