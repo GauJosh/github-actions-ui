@@ -1,5 +1,5 @@
 import { redact } from "../auth/redact";
-import type { ApiFailure, Job, JobRef, Run, RunRef } from "../domain/types";
+import type { ApiFailure, Job, JobRef, RepoRef, Repository, Run, RunFilters, RunRef, Workflow } from "../domain/types";
 import type { ReadMethod, Transport, TransportResponse } from "./transport";
 
 export class GitHubError extends Error {
@@ -60,10 +60,54 @@ export function createGitHubClient(options: { apiBase: string; transport: Transp
     return { body: (await r.response.json()) as T, link: r.response.headers.get("link") };
   }
 
-  const repoPath = (ref: RunRef) => `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`;
+  const repoPath = (ref: RepoRef) => `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`;
 
   return {
     apiHost,
+
+    /** Repositories the token can see, most recently pushed first. Fine-grained tokens list only their selected repositories. */
+    async listRepos(page: number): Promise<{ repos: Repository[]; hasNext: boolean }> {
+      const { body, link } = await getJson<Repository[]>(`/user/repos?per_page=100&sort=pushed&page=${page}`);
+      return { repos: body, hasNext: nextPath(link, apiBase) !== null };
+    },
+
+    async listWorkflows(ref: RepoRef): Promise<Workflow[]> {
+      return (await getJson<{ workflows: Workflow[] }>(`${repoPath(ref)}/actions/workflows?per_page=100`)).body.workflows;
+    },
+
+    /** One page of recent runs (no jobs or logs). Filters map to GitHub's own query parameters. */
+    async listRuns(ref: RepoRef, filters: RunFilters, page: number, perPage = 25): Promise<{ runs: Run[]; totalCount: number; hasNext: boolean }> {
+      const query = new URLSearchParams({ per_page: String(perPage), page: String(page) });
+      if (filters.status) query.set("status", filters.status);
+      if (filters.branch) query.set("branch", filters.branch);
+      if (filters.event) query.set("event", filters.event);
+      const base = filters.workflowId ? `${repoPath(ref)}/actions/workflows/${filters.workflowId}/runs` : `${repoPath(ref)}/actions/runs`;
+      const { body, link } = await getJson<{ total_count: number; workflow_runs: Run[] }>(`${base}?${query}`);
+      return { runs: body.workflow_runs, totalCount: body.total_count, hasNext: nextPath(link, apiBase) !== null };
+    },
+
+    /** Review history of a run's deployment approvals (read-only). */
+    async getApprovals(ref: RunRef): Promise<unknown[]> {
+      return (await getJson<unknown[]>(`${repoPath(ref)}/actions/runs/${ref.runId}/approvals`)).body;
+    },
+
+    /** Deployments of a run that are waiting for approval (read-only). */
+    async getPendingDeployments(ref: RunRef): Promise<unknown[]> {
+      return (await getJson<unknown[]>(`${repoPath(ref)}/actions/runs/${ref.runId}/pending_deployments`)).body;
+    },
+
+    /** A file at an exact commit (Contents API). Returns its text. */
+    async getWorkflowFile(ref: RepoRef, path: string, commit: string): Promise<string> {
+      const encoded = path.split("/").map(encodeURIComponent).join("/");
+      const { body } = await getJson<{ type?: string; encoding?: string; content?: string }>(
+        `${repoPath(ref)}/contents/${encoded}?ref=${encodeURIComponent(commit)}`,
+      );
+      if (body.type !== "file" || body.encoding !== "base64" || typeof body.content !== "string") {
+        throw new GitHubError({ kind: "http-error", status: 422 });
+      }
+      const binary = atob(body.content.replace(/\s/g, ""));
+      return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+    },
 
     async getRun(ref: RunRef): Promise<Run> {
       return (await getJson<Run>(`${repoPath(ref)}/actions/runs/${ref.runId}`)).body;

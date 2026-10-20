@@ -2,7 +2,7 @@
 
 A browser-only, read-only tool for triaging failed GitHub Actions runs. GitHub stays the source of truth: the app reads runs, jobs and logs through GitHub's REST API and never changes anything.
 
-**Status:** milestone M1, the first vertical slice. Paste a run URL, see the jobs that did not succeed, and open a failed job's log. The end of the log loads first, then the full log loads in a Web Worker, with search and line links. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+**Status:** choose a repository, browse and filter its workflow runs, and open a run as an interactive execution graph built from its jobs and the `needs:` in its workflow file. From any job, see its steps and open its log. The end of the log loads first, then the full log loads in a Web Worker, with search and line links. A run URL still works as a shortcut. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Requirements
 

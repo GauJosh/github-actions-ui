@@ -1,0 +1,113 @@
+/* Readability for large graphs: lanes, phase bands, junctions, focused edges. Loaded last. */
+
+/* Larger node text, readable at the 80% minimum opening zoom. */
+.gnode-title {
+  font-size: 14px;
+}
+.gnode-meta,
+.gnode-kind {
+  font-size: 12px;
+}
+.gnode-members .member {
+  font-size: 12.5px;
+}
+
+/* Swimlanes (declared job groups, e.g. services) and phase column bands. */
+.lane-band {
+  position: absolute;
+  left: 0;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  pointer-events: none;
+}
+.lane-band:nth-of-type(even) {
+  background: transparent;
+}
+.lane-band span {
+  position: absolute;
+  left: 8px;
+  top: 2px;
+  font: 600 12px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.column-band {
+  position: absolute;
+  top: 0;
+  border-left: 1px dashed var(--line);
+  border-right: 1px dashed var(--line);
+  pointer-events: none;
+}
+.column-band span {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  font: 700 13px var(--mono);
+  color: var(--accent);
+}
+
+/* Junctions for complete many-to-many dependencies. */
+.junction circle {
+  fill: var(--surface);
+  stroke: var(--muted);
+  stroke-width: 2;
+}
+.edge.bundled {
+  stroke-width: 1.8;
+}
+
+/* Focus: with a selection, unrelated edges and jobs recede; related ones stand out. */
+.edge.faded {
+  opacity: 0.12;
+}
+.focusing .junction circle {
+  opacity: 0.5;
+}
+.gnode.dimmed {
+  opacity: 0.45;
+}
+.gnode.related {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Phase summaries (neighbouring phases). */
+.gnode.external {
+  border-left-width: 1px;
+  border-style: dashed;
+  background: var(--surface-2);
+  opacity: 0.95;
+}
+.gnode.external .gnode-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Toolbar: edge mode and an inline minimap that never covers the graph. */
+.edge-mode {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 8px;
+}
+.edge-mode button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.graph-toolbar .minimap {
+  position: static;
+  margin-left: 8px;
+  border-radius: 4px;
+  opacity: 1;
+}
+
+/* Scoped-view notice in phase detail. */
+.scope-note {
+  font-size: 13px;
+  margin: 4px 0 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: 4px;
+}

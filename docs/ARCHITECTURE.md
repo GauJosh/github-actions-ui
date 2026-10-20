@@ -441,6 +441,30 @@ Fixtures come from a **fetch script pinned to an immutable commit SHA**. Each do
 - **Blob-host CSP check.** The end-to-end CSP test removes `api.github.com` from `connect-src` and checks that the request is blocked. It cannot remove the blob host meaningfully without the redirect (see above). Blob-host enforcement was verified in experiment E9.
 - **Dev server has no CSP.** The policy in §7.3 is applied by `vite preview` (production build), which the end-to-end tests use.
 
+### 11.3 Implementation notes: dashboard, execution graph and release views (for review)
+
+- **New read-only API calls** (all GET, through the existing transport): list repositories, workflows and runs; the workflow file at the run's `head_sha` (Contents API); a run's `approvals` and `pending_deployments`. No new hosts, so the CSP in §7.3 is unchanged.
+- **New runtime dependency:** `yaml` 2.9.1, loaded lazily, to parse workflow files.
+- **Dependency edges come only from `needs:`** in the workflow file at the run's commit. Matrix and reusable-workflow grouping also come from the file; a job matched only by name is labelled as such. Nothing is inferred from timing. If the file cannot be read, the run shows its jobs without edges and says why.
+- **Phases.** A run is shown as a release (overview → phase → job) only when phases can be established:
+  - declared in `.github/actions-ui-phases.yml` at the run's commit. This file is a convention of this app, not a GitHub feature, and the UI says so. Each phase may also declare `groups:` (labelled job lists), used only to draw lanes;
+  - or inferred from jobs' `environment:`, labelled as inferred;
+  - otherwise the plain execution graph is shown.
+- **Gates** come from the approvals and pending-deployments APIs, or from job status. `if: failure()` jobs are shown as recovery jobs.
+- **Focused phase view.** It shows the phase's own jobs and the edges between them. Dependencies on other phases are drawn as one labelled summary per neighbouring phase and direction, connected only to the jobs that really have such a dependency. The view states that it is scoped; every individual edge stays available in the all-jobs graph.
+- **Layout** (`src/domain/graph/layout.ts`) is presentation only. It may bundle a set of jobs that all need the same set of jobs through a marked junction ("Show all edges" draws them individually), band by lane or phase, and shift nodes right. It never adds, removes or changes a dependency.
+- **Demo gallery.** Synthetic enterprise scenarios (`tools/fixture-server/enterprise.ts`) are generated in the fixture server, labelled `[synthetic]`, and compiled out of production builds like the rest of fixture mode (§11.2). They are not part of the pinned public fixture repository.
+
+### 11.4 Implementation notes: step-to-log navigation (for review)
+
+- **What it does.** Selecting a step in the job details opens the log at that step's output (`…/jobs/J/steps/N[/L<line>]`): a failed step at its first `##[error]` line, otherwise at its first line. The step's lines are shaded and its error lines marked. Step, line, job, phase and view are kept in the URL, so back/forward and view switches keep the place.
+- **Mapping** is v2 as specified in §8 (`src/domain/steps/step-map.ts`), with checks C1–C4 and the risk flag run for every job. The log worker scans its store once per completed load and returns only marker and error line numbers; no log text is copied to the main thread.
+  - **Deviation from §5.2, for review:** §5.2 planned a `segments {apiSteps}` query that would map inside the worker. The implementation uses a `markers` query instead: the worker only scans, and the pure domain code maps markers to API steps on the main thread, so the same code is unit-tested against the corpus without a worker.
+- **States.** Consistency checks passed (with the standing note that runner markers may not give exact boundaries); "step boundaries approximate" with the reasons; no marker found for the step (no lines are attributed to it; a failed step offers a search for `##[error]` lines); skipped or not run; waiting for, paused, or needing the full log. Above the A8 limit the full log is still loaded only on request.
+- **Corpus result.** Every job in the pinned corpus passes all checks with no risk flag. s16 assertions hold. Copies of s16 with start-action/end-action markers removed are flagged approximate. These remain consistency checks, not ground truth (§8, §12).
+- **Synthetic enterprise logs** are generated in the runner's format (`##[group]Run …`, start-action/end-action around local composite actions). Rollback jobs emulate an older runner without those markers, so they show the approximate state.
+- **Known gap.** "Set up job" begins at the first line, but lines that a real runner prints between steps (for example "Prepare all required actions" before a local action) fall in the preceding step.
+
 ## 12. Open risks (not validated)
 
 | Risk | Current state | Mitigation or plan |

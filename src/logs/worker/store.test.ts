@@ -57,3 +57,33 @@ describe("LogStore", () => {
     expect(store.line(0)).toContain("\u001b[36;1m");
   });
 });
+
+describe("step markers", () => {
+  it("finds top-level and nested Run markers, post and cleanup markers and error lines, across chunk boundaries and CRLF", () => {
+    const text = [
+      "﻿2026-10-20T04:38:42.9873598Z Current runner version: '2.337.0'",
+      "2026-10-20T04:38:43.5147356Z ##[group]Run actions/checkout@v4",
+      "2026-10-20T04:38:44.3171501Z ##[group]Run ./.github/actions/composite",
+      "2026-10-20T04:38:44.3231467Z ##[start-action display=inner;id=__self.__run]",
+      "2026-10-20T04:38:44.3277536Z ##[group]Run echo inner",
+      "2026-10-20T04:38:44.3555965Z ##[end-action id=__self.__run;outcome=success]",
+      "2026-10-20T04:38:44.4019820Z ##[error]boom",
+      "2026-10-20T04:38:44.4366181Z Post job cleanup.",
+      "2026-10-20T04:38:44.6601015Z Cleaning up orphan processes",
+      "",
+    ].join("\r\n");
+    for (const chunk of [1, 7, 64, 100000]) {
+      const m = storeFrom(text, chunk).markers();
+      expect(m.lineCount).toBe(9);
+      expect(m.errors).toEqual([6]);
+      expect(m.markers.map((x) => [x.line, x.kind, x.text, x.nested])).toEqual([
+        [1, "run", "Run actions/checkout@v4", false],
+        [2, "run", "Run ./.github/actions/composite", false],
+        [4, "run", "Run echo inner", true],
+        [7, "post", "Post job cleanup.", false],
+        [8, "complete", "Cleaning up orphan processes", false],
+      ]);
+      expect(m.firstTime).toBe(Date.parse("2026-10-20T04:38:42.987Z"));
+    }
+  });
+});

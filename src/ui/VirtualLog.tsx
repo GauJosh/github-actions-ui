@@ -10,11 +10,13 @@ type Props = {
   fetchRows(from: number, count: number): Promise<string[]>;
   /** 1-based line to highlight and scroll to. */
   highlight?: number;
+  /** 1-based inclusive lines of the selected step, shaded; `marks` are its error lines. */
+  range?: { start: number; end: number; marks: number[] };
   hrefFor(line: number): string;
 };
 
 /** Renders only the visible rows of a worker-owned log. Line numbers shown are 1-based. */
-export function VirtualLog({ lineCount, fetchRows, highlight, hrefFor }: Props) {
+export function VirtualLog({ lineCount, fetchRows, highlight, range, hrefFor }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [rows, setRows] = useState<{ from: number; lines: string[] }>({ from: 0, lines: [] });
@@ -33,7 +35,10 @@ export function VirtualLog({ lineCount, fetchRows, highlight, hrefFor }: Props) 
   }, [first, span, lineCount, fetchRows]);
 
   useEffect(() => {
-    if (highlightReady && scroller.current) scroller.current.scrollTop = Math.max(0, (highlight - 1) * ROW - HEIGHT / 3);
+    if (!highlightReady || !scroller.current) return;
+    scroller.current.scrollTop = Math.max(0, (highlight - 1) * ROW - HEIGHT / 3);
+    // The line may arrive after the page was scrolled elsewhere (e.g. to a Load or Resume button).
+    scroller.current.scrollIntoView({ block: "nearest" });
   }, [highlight, highlightReady]);
 
   return (
@@ -42,8 +47,10 @@ export function VirtualLog({ lineCount, fetchRows, highlight, hrefFor }: Props) 
         {rows.lines.map((text, i) => {
           const n = rows.from + i + 1;
           const m = STAMP.exec(text);
+          const inStep = range !== undefined && n >= range.start && n <= range.end;
+          const cls = ["row", inStep && "in-step", inStep && n === range.start && "step-start", inStep && range.marks.includes(n) && "step-error", n === highlight && "highlighted"].filter(Boolean).join(" ");
           return (
-            <div key={n} className={n === highlight ? "row highlighted" : "row"} style={{ top: (n - 1) * ROW }} data-line={n}>
+            <div key={n} className={cls} style={{ top: (n - 1) * ROW }} data-line={n}>
               <a className="ln" href={hrefFor(n)}>
                 {n}
               </a>

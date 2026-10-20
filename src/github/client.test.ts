@@ -13,6 +13,7 @@ const auth: AuthProvider = {
 };
 
 const seen: { method: string; url: string; authorization: string | null }[] = [];
+const WORKFLOW_TEXT = "name: CI ✓\njobs: {}\n";
 const ref = { owner: "o", repo: "r", runId: 7 };
 const server = setupServer(
   http.all("*", ({ request }) => {
@@ -33,7 +34,30 @@ const server = setupServer(
   ),
   http.get("https://api.github.com/repos/o/r/actions/runs/404", () => new HttpResponse(null, { status: 404 })),
   http.get("http://localhost:5173/__fixtures/api/repos/o/r/actions/runs/7", () => HttpResponse.json({ id: 7 })),
+  http.get("https://api.github.com/user/repos", ({ request }) =>
+    HttpResponse.json([{ full_name: "o/r", name: "r", owner: { login: "o" }, private: true }], {
+      headers: new URL(request.url).searchParams.get("page") === "1" ? { Link: '<https://api.github.com/user/repos?page=2>; rel="next"' } : {},
+    }),
+  ),
+  http.get("https://api.github.com/repos/o/r/actions/runs", ({ request }) => {
+    seenQueries.push(new URL(request.url).search);
+    return HttpResponse.json({ total_count: 1, workflow_runs: [{ id: 1 }] });
+  }),
+  http.get("https://api.github.com/repos/o/r/actions/workflows/42/runs", ({ request }) => {
+    seenQueries.push(`workflow42${new URL(request.url).search}`);
+    return HttpResponse.json(
+      { total_count: 60, workflow_runs: [{ id: 2 }] },
+      { headers: { Link: '<https://api.github.com/repos/o/r/actions/workflows/42/runs?page=2>; rel="next"' } },
+    );
+  }),
+  http.get("https://api.github.com/repos/o/r/actions/workflows", () => HttpResponse.json({ total_count: 1, workflows: [{ id: 42, name: "CI", path: ".github/workflows/ci.yml", state: "active" }] })),
+  http.get("https://api.github.com/repos/o/r/contents/.github/workflows/ci.yml", ({ request }) =>
+    new URL(request.url).searchParams.get("ref") === "abc123"
+      ? HttpResponse.json({ type: "file", encoding: "base64", content: Buffer.from(WORKFLOW_TEXT).toString("base64").replace(/.{20}/g, "$&\n") })
+      : HttpResponse.json({ message: "Not Found" }, { status: 404 }),
+  ),
 );
+const seenQueries: string[] = [];
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => {
   seen.length = 0;
@@ -62,6 +86,31 @@ describe("live GitHub client", () => {
     const error = await live.getRun({ ...ref, runId }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GitHubError);
     expect((error as GitHubError).failure).toEqual(failure);
+  });
+});
+
+describe("repository, workflow and run-list calls", () => {
+  it("lists repositories and reports whether another page exists", async () => {
+    const page = await live.listRepos(1);
+    expect(page.repos.map((r) => r.full_name)).toEqual(["o/r"]);
+    expect(page.hasNext).toBe(true);
+    expect((await live.listRepos(2)).hasNext).toBe(false);
+  });
+
+  it("maps run filters to GitHub's query parameters, and the workflow filter to the workflow's own endpoint", async () => {
+    seenQueries.length = 0;
+    const plain = await live.listRuns({ owner: "o", repo: "r" }, { status: "failure", branch: "feature/x", event: "push" }, 2, 25);
+    expect(plain).toEqual({ runs: [{ id: 1 }], totalCount: 1, hasNext: false });
+    const byWorkflow = await live.listRuns({ owner: "o", repo: "r" }, { workflowId: 42 }, 1, 25);
+    expect(byWorkflow.hasNext).toBe(true);
+    expect(seenQueries).toEqual(["?per_page=25&page=2&status=failure&branch=feature%2Fx&event=push", "workflow42?per_page=25&page=1"]);
+    expect((await live.listWorkflows({ owner: "o", repo: "r" }))[0]!.path).toBe(".github/workflows/ci.yml");
+  });
+
+  it("reads a workflow file at an exact commit and decodes UTF-8 base64", async () => {
+    expect(await live.getWorkflowFile({ owner: "o", repo: "r" }, ".github/workflows/ci.yml", "abc123")).toBe(WORKFLOW_TEXT);
+    const error = await live.getWorkflowFile({ owner: "o", repo: "r" }, ".github/workflows/ci.yml", "other").catch((e: unknown) => e);
+    expect((error as GitHubError).failure).toEqual({ kind: "not-found-or-no-permission" });
   });
 });
 

@@ -8,7 +8,12 @@
   - Security follow-ups applied before acceptance: fixture mode is compiled out of production builds, and all unit tests fail closed on network access (ARCHITECTURE §11.2).
 - **Fixture pin:** `184ede06780166a90bdb173adda9a23a5b6545c4`, recorded in `fixtures.lock.json`.
 - **Repository:** `https://github.com/GauJosh/github-actions-ui`, **private**. Open source first is the intended direction. Publishing waits for a separate decision after the first vertical slice is reviewed.
-- **Next:** M2 has not started. Each milestone starts only after its gate is approved. Q2 and Q10 remain open.
+- **Repository dashboard, pipeline explorer and release views** (requested 2026-10-20, ahead of the original M2–M5 order): implemented locally; design direction **approved** 2026-10-20; not yet committed.
+  - Covers part of M4 (finding runs: repository list, run list with filters) and a new execution-graph view of each run.
+  - Large multi-environment runs open on a release overview (phases → jobs), with focused phase views and the full graph as an alternative. Demo gallery of synthetic enterprise scenarios in fixture mode only.
+  - Dependency edges come only from `needs:` in the workflow file at the run's commit. Details: ARCHITECTURE §11.3.
+  - **Step-to-log navigation** (requested 2026-10-20): step mapping v2 with checks C1–C4, the risk flag and the "approximate" and "unavailable" states, implemented locally, **in review**, not committed (ARCHITECTURE §11.4). It covers M2 acceptance criteria 1 and 2.
+  - M2's other log-exploration items (ANSI, groups, scaled scrolling, the worker cache) are still open. Q2 and Q10 remain open.
 - Commits and pushes each need approval.
 
 **References:**

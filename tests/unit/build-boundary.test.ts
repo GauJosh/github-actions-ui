@@ -21,6 +21,9 @@ const FORBIDDEN = [
   "Injected worker failure",
   "Fixture mode blocked a request", // fixture transport
   "990000001", // synthetic fixture run
+  "[synthetic]", // synthetic fixture labels
+  "Demo gallery", // fixture-only gallery
+  "Demo scenario", // fixture-only scenario strip
   "fixtures.lock", // fixture server
   "gunzip",
   "raw.githubusercontent",

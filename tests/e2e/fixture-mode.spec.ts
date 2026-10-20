@@ -3,8 +3,9 @@ import { APP_CSP, WORKER_CSP } from "../../tools/vite/security-headers.ts";
 import { S09, cspViolations, diagnosticEvents, forbidGitHub, instrument, responsiveness, s09Expectations, statusTexts } from "./support";
 
 const s09Hash = `#/runs/${S09.owner}/${S09.repo}/${S09.runId}`;
+const s09Log = `${s09Hash}/jobs/${S09.jobId}/log`;
 
-test("s09 in fixture mode: failed job from API data, tail first, complete log, search and deep links", async ({ page }) => {
+test("s09 via the run-URL shortcut: failed job from API data, log on demand, tail first, complete log, search and deep links", async ({ page }) => {
   const expected = s09Expectations();
   const github = await forbidGitHub(page);
   await instrument(page);
@@ -19,8 +20,13 @@ test("s09 in fixture mode: failed job from API data, tail first, complete log, s
   await page.getByLabel("GitHub Actions run URL").fill(`https://github.com/${S09.owner}/${S09.repo}/actions/runs/${S09.runId}`);
   await page.getByRole("button", { name: "Open run" }).click();
 
-  await expect(page.getByTestId("failed-jobs")).toContainText("noisy");
-  await expect(page.getByTestId("failed-jobs")).toContainText("Step 2: Generate large noisy log");
+  // The run opens on its graph; no log is downloaded until the user asks for it.
+  await expect(page.getByTestId("job-list")).toContainText("noisy");
+  await expect(page.getByTestId("log-status")).toHaveCount(0);
+  await page.getByTestId("graph-viewport").getByRole("button", { name: /^noisy:/ }).click();
+  await expect(page.getByTestId("failure-summary")).toHaveText("GitHub's step data identifies the failed step: Generate large noisy log.");
+  await page.getByTestId("open-log").click();
+  await expect(page).toHaveURL(new RegExp(`/jobs/${S09.jobId}/log$`));
 
   const status = page.getByTestId("log-status");
   await expect(status).toHaveAttribute("data-status", "complete", { timeout: 60_000 });
@@ -65,7 +71,7 @@ test("s09 in fixture mode: failed job from API data, tail first, complete log, s
 
 test("A8: a log above the soft limit stops at the tail; the full log loads only on request", async ({ page }) => {
   const github = await forbidGitHub(page);
-  await page.goto("/?mode=fixtures#/runs/fixtures/synthetic/990000001");
+  await page.goto("/?mode=fixtures#/runs/fixtures/synthetic/990000001/jobs/990000002/log");
   const status = page.getByTestId("log-status");
   await expect(status).toHaveAttribute("data-status", "tail-only", { timeout: 30_000 });
   await expect(status).toContainText("This log is 46.0 MB, above the 44.0 MB automatic-load limit");
@@ -84,7 +90,7 @@ test("A8: a log above the soft limit stops at the tail; the full log loads only 
 test("A9: a worker failure reloads from the start with visible progress and ends complete", async ({ page }) => {
   const expected = s09Expectations();
   await instrument(page);
-  await page.goto(`/?mode=fixtures&fixture-faults=worker-failures-1${s09Hash}`);
+  await page.goto(`/?mode=fixtures&fixture-faults=worker-failures-1${s09Log}`);
   const status = page.getByTestId("log-status");
   await expect(status).toHaveAttribute("data-status", "complete", { timeout: 90_000 });
   expect((await statusTexts(page)).some((t) => t.startsWith("Reloading log after an internal error (restart 1 of 2)"))).toBe(true);
@@ -94,7 +100,7 @@ test("A9: a worker failure reloads from the start with visible progress and ends
 
 test("A9: repeated worker failures end in a recoverable error state, and Retry recovers", async ({ page }) => {
   const expected = s09Expectations();
-  await page.goto(`/?mode=fixtures&fixture-faults=worker-failures-3${s09Hash}`);
+  await page.goto(`/?mode=fixtures&fixture-faults=worker-failures-3${s09Log}`);
   const status = page.getByTestId("log-status");
   await expect(status).toHaveAttribute("data-status", "processing-failed", { timeout: 90_000 });
   await expect(status).toContainText("Log processing stopped after repeated internal errors.");

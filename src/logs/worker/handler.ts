@@ -50,6 +50,9 @@ export function createLogWorkerHandler(post: (message: FromWorker) => void, fail
       case "search":
         post({ type: "reply", id: message.id, value: full.search(message.query, message.cap) });
         return;
+      case "markers":
+        post({ type: "reply", id: message.id, value: full.markers() });
+        return;
     }
   };
 }

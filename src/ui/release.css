@@ -1,0 +1,393 @@
+/* Release overview, phase detail, demo gallery. Loaded after explorer.css. */
+
+:root {
+  --recover: #b45309;
+  --block: #6b7280;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --recover: #f0a35b;
+    --block: #9aa4b4;
+  }
+}
+
+/* ---- view switch ---- */
+.view-switch {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 10px 0 0;
+  border-bottom: 1px solid var(--line);
+}
+.view-switch [role="tab"] {
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  padding: 6px 14px;
+  background: var(--surface-2);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+.view-switch [role="tab"][aria-selected="true"] {
+  background: var(--surface);
+  color: var(--accent);
+  border-bottom: 1px solid var(--surface);
+}
+.view-switch [role="tab"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.view-switch .muted {
+  margin-left: 8px;
+  font-size: 12.5px;
+}
+
+/* ---- phase status ---- */
+.pbadge {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  font: 600 12px/1.6 var(--mono);
+  padding: 0 8px;
+  border-radius: 12px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+  width: fit-content;
+}
+.ps-succeeded {
+  --ps: var(--pass);
+}
+.ps-failed,
+.ps-recovery-failed {
+  --ps: var(--fail);
+}
+.ps-recovered,
+.ps-recovering {
+  --ps: var(--recover);
+}
+.ps-rejected,
+.ps-cancelled {
+  --ps: var(--warn);
+}
+.ps-awaiting-approval {
+  --ps: var(--warn);
+}
+.ps-running {
+  --ps: var(--run);
+}
+.ps-pending,
+.ps-blocked,
+.ps-skipped,
+.ps-not-started,
+.ps-other {
+  --ps: var(--block);
+}
+.pbadge {
+  color: var(--ps);
+}
+
+/* ---- release overview ---- */
+.release {
+  display: grid;
+  gap: 10px;
+}
+.stop-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--fail);
+  border-left-width: 5px;
+  background: color-mix(in srgb, var(--fail) 7%, var(--surface));
+}
+.stop-banner p {
+  margin: 0;
+  max-width: 90ch;
+}
+.stop-paused,
+.stop-rejected,
+.stop-cancelled {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+}
+.stop-actions {
+  display: flex;
+  gap: 8px;
+}
+.phase-rail {
+  list-style: none;
+  margin: 0;
+  padding: 4px 2px 8px;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+}
+.phase-cell {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 176px;
+}
+.phase-card {
+  flex: 1;
+  align-self: stretch;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-top: 5px solid var(--ps);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  min-width: 0;
+}
+.phase-card:hover {
+  background: var(--surface-2);
+}
+.phase-card.selected {
+  box-shadow: 0 0 0 3px var(--accent);
+}
+.ps-blocked.phase-card,
+.ps-pending.phase-card,
+.ps-not-started.phase-card {
+  background-image: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--block) 8%, transparent) 8px 16px);
+}
+.pc-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+}
+.pc-name {
+  font-weight: 700;
+  font-size: 15px;
+}
+.pc-kind {
+  font: 11px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pc-line {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.pc-line.gate {
+  font-weight: 600;
+}
+.g-pending {
+  color: var(--warn);
+}
+.g-approved {
+  color: var(--pass);
+}
+.g-rejected {
+  color: var(--fail);
+}
+.pc-failed {
+  color: var(--fail);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-recovery {
+  color: var(--recover);
+  font-weight: 600;
+}
+.pc-blocked {
+  color: var(--ink);
+}
+.phase-link {
+  flex: 0 0 22px;
+  text-align: center;
+  font-size: 20px;
+  color: var(--muted);
+}
+.phase-link.none {
+  opacity: 0.4;
+}
+.pbar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.pbar-success {
+  background: var(--pass);
+}
+.pbar-failure {
+  background: var(--fail);
+}
+.pbar-running {
+  background: var(--run);
+}
+.pbar-skipped {
+  background: var(--block);
+  opacity: 0.5;
+}
+.release-source {
+  margin: 0;
+}
+
+/* ---- phase detail ---- */
+.phase-detail .panel-head h3 {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.phase-facts {
+  margin: 4px 0 8px;
+}
+.evidence-line {
+  margin: 4px 0 8px;
+}
+.gnode.external {
+  opacity: 0.8;
+  border-style: dashed;
+  background: var(--surface-2);
+}
+.gnode.external .gnode-name {
+  font-weight: 500;
+}
+.open-call {
+  margin: 0 8px 8px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---- job detail ---- */
+.job-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 4px 0 8px;
+  font-size: 12.5px;
+}
+.role-recovery {
+  border-color: var(--recover);
+  color: var(--recover);
+}
+.role-deploy {
+  border-color: var(--accent);
+}
+.chip.gate.g-pending,
+.chip.gate.g-approved,
+.chip.gate.g-rejected {
+  border-color: currentColor;
+}
+code.action {
+  margin-left: 8px;
+  font-size: 11.5px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+code.action.custom {
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.jl-group-title {
+  margin: 10px 0 2px;
+  font: 600 11px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.jl-scroll {
+  max-height: 560px;
+  overflow: auto;
+}
+.joblist .jl-scroll ol {
+  max-height: none;
+}
+
+/* ---- demo gallery ---- */
+.home-gallery {
+  grid-column: 1 / -1;
+}
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.gallery-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.gallery-card h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.gallery-card ul {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: grid;
+  gap: 3px;
+  font-size: 13.5px;
+}
+.gallery-outcome {
+  font: 11.5px var(--mono);
+  color: var(--muted);
+}
+.o-failure {
+  color: var(--fail);
+}
+.o-success {
+  color: var(--pass);
+}
+.o-waiting {
+  color: var(--warn);
+}
+.o-in_progress {
+  color: var(--run);
+}
+.gallery-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 6%, var(--surface));
+  font-size: 13px;
+}
+.gallery-strip ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+}
+.gallery-strip li a {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  text-decoration: none;
+  color: var(--ink);
+  background: var(--surface);
+}
+.gallery-strip li a.current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  font-weight: 700;
+}

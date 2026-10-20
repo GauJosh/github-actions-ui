@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseHash, parseRunUrl, routeToHash } from "./run-url";
+import { parseHash, parseRepo, parseRunUrl, routeToHash } from "./run-url";
 
 describe("parseRunUrl", () => {
   it("parses run, job and attempt URLs", () => {
@@ -19,11 +19,50 @@ describe("parseRunUrl", () => {
   });
 });
 
+describe("parseRepo", () => {
+  it("accepts owner/repo and repository URLs only", () => {
+    expect(parseRepo("GauJosh/gha-ui-fixtures")).toEqual({ owner: "GauJosh", repo: "gha-ui-fixtures" });
+    expect(parseRepo("https://github.com/o/r.git")).toEqual({ owner: "o", repo: "r" });
+    for (const bad of ["o", "o/r/x", "../x/y", "o r/x"]) expect(parseRepo(bad)).toBeNull();
+  });
+});
+
 describe("hash routes", () => {
-  it("round-trips run, job and line", () => {
-    const route = { run: { owner: "o", repo: "r", runId: 1 }, jobId: 2, line: 215057 };
+  it("round-trips run, job, log and line", () => {
+    const route = { run: { owner: "o", repo: "r", runId: 1 }, jobId: 2, line: 215057, log: true };
     expect(routeToHash(route)).toBe("#/runs/o/r/1/jobs/2/L215057");
     expect(parseHash(routeToHash(route))).toEqual(route);
+    expect(parseHash("#/runs/o/r/1/jobs/2/log")).toEqual({ run: { owner: "o", repo: "r", runId: 1 }, jobId: 2, log: true });
+    expect(parseHash("#/runs/o/r/1/jobs/2")).toEqual({ run: { owner: "o", repo: "r", runId: 1 }, jobId: 2 });
     expect(parseHash("#/nonsense")).toEqual({});
+  });
+
+  it("round-trips phase, reusable call, job, log and the graph view", () => {
+    const route = { run: { owner: "o", repo: "r", runId: 1 }, phase: "env:stage", call: "ci", jobId: 9, log: true };
+    expect(routeToHash(route)).toBe("#/runs/o/r/1/phases/env%3Astage/calls/ci/jobs/9/log");
+    expect(parseHash(routeToHash(route))).toEqual(route);
+    const graph = { run: { owner: "o", repo: "r", runId: 1 }, jobId: 9, view: "graph" as const };
+    expect(routeToHash(graph)).toBe("#/runs/o/r/1/jobs/9?view=graph");
+    expect(parseHash(routeToHash(graph))).toEqual(graph);
+  });
+
+  it("round-trips a step (which opens the log), with or without a line and the phase or graph context", () => {
+    const step = { run: { owner: "o", repo: "r", runId: 1 }, phase: "stage", jobId: 9, step: 4, log: true };
+    expect(routeToHash(step)).toBe("#/runs/o/r/1/phases/stage/jobs/9/steps/4");
+    expect(parseHash(routeToHash(step))).toEqual(step);
+    const line = { ...step, line: 158 };
+    expect(routeToHash(line)).toBe("#/runs/o/r/1/phases/stage/jobs/9/steps/4/L158");
+    expect(parseHash(routeToHash(line))).toEqual(line);
+    const graph = { run: { owner: "o", repo: "r", runId: 1 }, jobId: 9, step: 2, log: true, view: "graph" as const };
+    expect(routeToHash(graph)).toBe("#/runs/o/r/1/jobs/9/steps/2?view=graph");
+    expect(parseHash(routeToHash(graph))).toEqual(graph);
+    expect(parseHash("#/runs/o/r/1/jobs/9/steps/x")).toEqual({});
+  });
+
+  it("round-trips the repository run list with its filters", () => {
+    const route = { repo: { owner: "o", repo: "r" }, filters: { status: "failure", branch: "feature/x", event: "push", workflowId: 7 } };
+    expect(routeToHash(route)).toBe("#/repos/o/r?status=failure&workflow=7&branch=feature%2Fx&event=push");
+    expect(parseHash(routeToHash(route))).toEqual(route);
+    expect(parseHash("#/repos/o/r")).toEqual({ repo: { owner: "o", repo: "r" }, filters: {} });
   });
 });

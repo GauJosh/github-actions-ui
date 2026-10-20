@@ -10,6 +10,7 @@ import {
   MAX_WORKER_RESTARTS,
   TAIL_BYTES,
 } from "../../config";
+import type { LogMarkers } from "../../domain/steps/step-map";
 import type { ApiFailure } from "../../domain/types";
 import { GitHubError, classifyFailure } from "../../github/client";
 import type { ReadMethod, TransportResponse } from "../../github/transport";
@@ -213,6 +214,17 @@ export class LogLoader {
     if (!session || session.failed) return null;
     try {
       return await session.ask<SearchResult>({ type: "search", query, cap });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Step markers of the complete log. Null until the full log has loaded (absolute line numbers need it). */
+  async markers(): Promise<LogMarkers | null> {
+    const session = this.session;
+    if (this.snap.status !== "complete" || !session || session.failed) return null;
+    try {
+      return await session.ask<LogMarkers>({ type: "markers" });
     } catch {
       return null;
     }

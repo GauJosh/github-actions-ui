@@ -4,6 +4,9 @@ import { createRoot } from "react-dom/client";
 import { GitHubError } from "./github/client";
 import { App } from "./ui/App";
 import "./ui/styles.css";
+import "./ui/explorer.css";
+import "./ui/release.css";
+import "./ui/focus.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {

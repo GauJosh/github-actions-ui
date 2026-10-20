@@ -1,11 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState, useSyncExternalStore } from "react";
-import { createEnvironment, modeFromLocation, type Environment, type Mode } from "../app/environment";
+import { createEnvironment, modeFromLocation, type Mode } from "../app/environment";
 import { patProvider } from "../auth/pat-provider";
-import { parseHash, parseRunUrl, routeToHash } from "../domain/run-url";
-import { FixtureBanner, FixtureIndex } from "../fixture-mode/FixtureIndex";
+import { parseHash } from "../domain/run-url";
+import { FixtureBanner } from "../fixture-mode/FixtureBanner";
 import { ConnectView } from "./ConnectView";
-import { RunView } from "./RunView";
+import { RunExplorer } from "./explorer/RunExplorer";
+import { Home } from "./Home";
+import { RepoDashboard } from "./RepoDashboard";
 
 const subscribeHash = (onChange: () => void) => {
   window.addEventListener("hashchange", onChange);
@@ -47,47 +49,22 @@ function Main({ mode }: { mode: Mode }) {
     <div className="app">
       {__FIXTURE_MODE__ && mode === "fixtures" && <FixtureBanner />}
       <header className="topbar">
-        <h1>GitHub Actions UI</h1>
+        <h1>
+          <a href="#/">GitHub Actions UI</a>
+        </h1>
         {mode === "live" && connected && <button onClick={disconnect}>Disconnect</button>}
       </header>
       <main>
         {mode === "live" && !connected ? (
           <ConnectView onConnected={() => setConnected(true)} />
+        ) : route.run ? (
+          <RunExplorer key={`${route.run.owner}/${route.run.repo}/${route.run.runId}`} env={env} run={route.run} route={route} />
+        ) : route.repo ? (
+          <RepoDashboard key={`${route.repo.owner}/${route.repo.repo}/${route.filters?.branch ?? ""}`} env={env} repo={route.repo} filters={route.filters ?? {}} />
         ) : (
-          <>
-            <RunPicker env={env} />
-            {route.run && <RunView env={env} run={route.run} jobId={route.jobId} line={route.line} />}
-          </>
+          <Home env={env} />
         )}
       </main>
     </div>
-  );
-}
-
-function RunPicker({ env }: { env: Environment }) {
-  const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  function open(event: React.FormEvent) {
-    event.preventDefault();
-    const ref = parseRunUrl(value);
-    if (!ref) {
-      setError("Paste a run URL like https://github.com/OWNER/REPO/actions/runs/123456789");
-      return;
-    }
-    setError(null);
-    window.location.hash = routeToHash({ run: ref, jobId: ref.jobId });
-  }
-
-  return (
-    <section className="panel picker">
-      <form onSubmit={open}>
-        <label htmlFor="run-url">GitHub Actions run URL</label>
-        <input id="run-url" value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://github.com/OWNER/REPO/actions/runs/123" />
-        <button type="submit">Open run</button>
-      </form>
-      {error && <p className="state state-error">{error}</p>}
-      {__FIXTURE_MODE__ && env.mode === "fixtures" && <FixtureIndex />}
-    </section>
   );
 }

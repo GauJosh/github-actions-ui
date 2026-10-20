@@ -30,11 +30,11 @@ export function syntheticLog(start: number, end: number): Buffer {
 const htmlBase = "https://github.com/fixtures/synthetic/actions/runs/990000001";
 
 export const syntheticRun = {
-  indexEntry: { owner: SYNTHETIC_LARGE.owner, repo: SYNTHETIC_LARGE.repo, runId: SYNTHETIC_LARGE.runId, title: "Synthetic large log (46 MB, fail)", conclusion: "failure" },
+  indexEntry: { owner: SYNTHETIC_LARGE.owner, repo: SYNTHETIC_LARGE.repo, runId: SYNTHETIC_LARGE.runId, title: "[synthetic] Large log (46 MB, fail)", conclusion: "failure" },
   run: {
     id: SYNTHETIC_LARGE.runId,
-    name: "Synthetic large log",
-    display_title: "Synthetic large log (46 MB, fail)",
+    name: "[synthetic] Large log",
+    display_title: "[synthetic] Large log (46 MB, fail)",
     status: "completed",
     conclusion: "failure",
     run_attempt: 1,

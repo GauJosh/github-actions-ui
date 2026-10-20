@@ -16,3 +16,4 @@ dist-fixtures/
 coverage/
 playwright-report/
 test-results/
+review-screenshots/

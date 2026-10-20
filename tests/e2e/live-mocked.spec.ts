@@ -6,7 +6,9 @@
 // signed-URL marker never surfaced) is covered by src/logs/download/redirect.test.ts and by experiment E9.
 import { expect, test, type Page } from "@playwright/test";
 import { APP_CSP } from "../../tools/vite/security-headers.ts";
-import { cspViolations, instrument } from "./support";
+import { readFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
+import { FIXTURE_COMMIT, cspViolations, instrument } from "./support";
 
 const ORIGIN = "http://127.0.0.1:4317";
 const nonce = Math.random().toString(36).slice(2, 10);
@@ -34,7 +36,7 @@ async function mockGitHub(page: Page): Promise<Seen[]> {
     if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers: { ...cors, "access-control-allow-methods": "GET, HEAD" } });
     if (path === "/repos/acme/app/actions/runs/1") {
       return route.fulfill({
-        json: { id: 1, display_title: "CI on main", status: "completed", conclusion: "failure", run_attempt: 1, head_branch: "main", head_sha: "a".repeat(40), html_url: "https://github.com/acme/app/actions/runs/1", event: "push" },
+        json: { id: 1, display_title: "CI on main", status: "completed", conclusion: "failure", run_attempt: 1, head_branch: "main", head_sha: "a".repeat(40), html_url: "https://github.com/acme/app/actions/runs/1", event: "push", path: ".github/workflows/ci.yml" },
         headers: cors,
       });
     }
@@ -57,6 +59,11 @@ async function mockGitHub(page: Page): Promise<Seen[]> {
         },
         headers: cors,
       });
+    }
+    if (path === "/repos/acme/app/contents/.github/workflows/ci.yml") {
+      const ref = new URL(request.url()).searchParams.get("ref");
+      if (ref !== "a".repeat(40)) return route.fulfill({ status: 404, json: { message: "Not Found" }, headers: cors });
+      return route.fulfill({ json: { type: "file", encoding: "base64", content: Buffer.from("jobs:\n  test:\n    runs-on: x\n").toString("base64") }, headers: cors });
     }
     if (path === "/repos/acme/app/actions/jobs/2/logs") {
       const range = /^bytes=(\d+)-(\d+)$/.exec(h["range"] ?? "");
@@ -85,7 +92,10 @@ test("live mode: the token stays in memory, is sent only to the API, and is neve
   const seen = await mockGitHub(page);
   await connectAndOpen(page);
 
-  await expect(page.getByTestId("failed-jobs")).toContainText("Step 3: Run tests");
+  await expect(page.getByTestId("job-list")).toContainText("test");
+  await page.getByTestId("job-list").getByRole("button", { name: /test/ }).click();
+  await expect(page.getByTestId("failure-summary")).toHaveText("GitHub's step data identifies the failed step: Run tests.");
+  await page.getByTestId("open-log").click();
   const status = page.getByTestId("log-status");
   await expect(status).toHaveAttribute("data-status", "complete", { timeout: 30_000 });
   await expect(status).toContainText(`Download complete (${LOG.length.toLocaleString("en-US")} bytes, matches the size reported by GitHub)`);
@@ -95,6 +105,8 @@ test("live mode: the token stays in memory, is sent only to the API, and is neve
   expect(app.every((s) => s.method === "GET" || s.method === "HEAD")).toBe(true);
   expect(app.every((s) => s.authorization === `Bearer ${FAKE_TOKEN}`)).toBe(true);
   expect(app.map((s) => s.range).filter(Boolean)).toEqual([`bytes=${LOG.length - 262144}-${LOG.length - 1}`, `bytes=0-${LOG.length - 262145}`]);
+  // The graph's workflow file was requested at the run's own commit, not a branch.
+  expect(app.some((s) => s.path === "/repos/acme/app/contents/.github/workflows/ci.yml")).toBe(true);
 
   // Nothing persisted, nothing in the URL, nothing surfaced.
   const storage = await page.evaluate(async () => ({
@@ -141,4 +153,98 @@ test("CSP is enforced: a host removed from connect-src is blocked", async ({ pag
   await connectAndOpen(page);
   await expect(page.getByRole("alert")).toContainText("Network error");
   expect((await cspViolations(page)).some((v) => v.startsWith("connect-src"))).toBe(true);
+});
+
+test("live dashboard: a token that cannot list repositories, rate limits, and a failed next page are explicit states", async ({ page }) => {
+  const cors = { "access-control-allow-origin": ORIGIN, "access-control-allow-headers": "authorization, accept, x-github-api-version", "access-control-expose-headers": "Link, x-ratelimit-remaining, x-ratelimit-reset" };
+  let runPages = 0;
+  await page.route("https://api.github.com/**", (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: { ...cors, "access-control-allow-methods": "GET, HEAD" } });
+    if (url.pathname === "/user/repos") return route.fulfill({ status: 403, json: { message: "Resource not accessible by personal access token" }, headers: cors });
+    if (url.pathname === "/repos/acme/limited/actions/runs") {
+      return route.fulfill({ status: 403, json: { message: "API rate limit exceeded" }, headers: { ...cors, "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1893456000" } });
+    }
+    if (url.pathname === "/repos/acme/app/actions/runs") {
+      runPages++;
+      if (url.searchParams.get("page") === "2") return route.fulfill({ status: 502, json: { message: "Bad gateway" }, headers: cors });
+      const runs = Array.from({ length: 25 }, (_, i) => ({ id: i + 1, display_title: `run ${i + 1}`, status: "completed", conclusion: "success", run_attempt: 1, head_branch: "main", head_sha: "b".repeat(40), html_url: "https://github.com/acme/app", event: "push" }));
+      return route.fulfill({ json: { total_count: 40, workflow_runs: runs }, headers: { ...cors, link: '<https://api.github.com/repos/acme/app/actions/runs?per_page=25&page=2>; rel="next"' } });
+    }
+    if (url.pathname.endsWith("/actions/workflows")) return route.fulfill({ json: { total_count: 0, workflows: [] }, headers: cors });
+    return route.fulfill({ status: 404, json: { message: "Not Found" }, headers: cors });
+  });
+  await page.goto("/");
+  await page.getByTestId("token-input").fill(FAKE_TOKEN);
+  await page.getByRole("button", { name: "Connect" }).click();
+  await expect(page.getByRole("alert")).toContainText("This token cannot list repositories");
+
+  await page.getByLabel("Repository (owner/repo)").fill("acme/limited");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("GitHub rate limit reached. It resets at");
+
+  // Same page, same in-memory session: only the fragment changes.
+  await page.evaluate(() => (window.location.hash = "#/repos/acme/app"));
+  await expect(page.getByTestId("run-list").locator("li")).toHaveCount(25);
+  await page.getByRole("button", { name: "Load 25 more" }).click();
+  await expect(page.getByRole("alert")).toContainText("Showing partial results: the next page could not be loaded.");
+  await expect(page.getByTestId("run-list").locator("li")).toHaveCount(25);
+  expect(runPages).toBeGreaterThanOrEqual(2);
+});
+
+test("live mode, no step markers in the log: the step gets a clear fallback and no lines are attributed to it", async ({ page }) => {
+  await mockGitHub(page);
+  await connectAndOpen(page);
+  await page.getByTestId("job-list").getByRole("button", { name: /test/ }).click();
+  await page.getByTestId("failed-step-link").click();
+  await expect(page).toHaveURL(/#\/runs\/acme\/app\/1\/jobs\/2\/steps\/3$/);
+  await expect(page.getByTestId("log-status")).toHaveAttribute("data-status", "complete", { timeout: 30_000 });
+  const locator = page.getByTestId("step-locator");
+  await expect(locator).toHaveAttribute("data-state", "unmatched");
+  await expect(locator).toContainText("No log marker was found for step 3.");
+  await expect(page.locator(".row.in-step")).toHaveCount(0);
+  await expect(page.locator(".row.highlighted")).toHaveCount(0);
+  await page.getByTestId("find-errors").click();
+  await expect(page.getByLabel("Search log")).toHaveValue("##[error]");
+  await expect(page.getByTestId("search-summary")).toHaveText("No matches");
+});
+
+test("live mode, a real runner log (fixture s16 served by the mocked API): the failed step after a composite action is found", async ({ page }) => {
+  const seen = await mockGitHub(page);
+  const dir = `.fixtures/${FIXTURE_COMMIT}/fixtures/GauJosh__gha-ui-fixtures/39370654036`;
+  const s16 = JSON.parse(readFileSync(`${dir}/attempts/1/jobs.json`, "utf8")) as { jobs: { id: number }[] };
+  const job = { ...s16.jobs[0]!, id: 2, html_url: "https://github.com/acme/app/actions/runs/1/job/2" };
+  const log = gunzipSync(readFileSync(`${dir}/logs/${s16.jobs[0]!.id}.log.gz`));
+  const cors = { "access-control-allow-origin": ORIGIN, "access-control-expose-headers": "Content-Length, Content-Range" };
+  // Registered after mockGitHub, so these take precedence for the jobs list and the log.
+  await page.route("https://api.github.com/repos/acme/app/actions/runs/1/jobs*", (route) =>
+    route.request().method() === "OPTIONS" ? route.fallback() : route.fulfill({ json: { total_count: 1, jobs: [job] }, headers: cors }),
+  );
+  await page.route("https://api.github.com/repos/acme/app/actions/jobs/2/logs", (route) => {
+    const request = route.request();
+    seen.push({ method: request.method(), path: "/repos/acme/app/actions/jobs/2/logs", range: request.headers()["range"] });
+    if (request.method() === "OPTIONS") return route.fallback();
+    if (request.method() === "HEAD") return route.fulfill({ status: 200, headers: { ...cors, "content-length": String(log.length) }, body: "" });
+    const range = /^bytes=(\d+)-(\d+)$/.exec(request.headers()["range"] ?? "");
+    if (!range) return route.fulfill({ status: 200, headers: cors, body: log });
+    const [start, end] = [Number(range[1]), Math.min(Number(range[2]), log.length - 1)];
+    return route.fulfill({ status: 206, headers: { ...cors, "content-range": `bytes ${start}-${end}/${log.length}` }, body: log.subarray(start, end + 1) });
+  });
+  await connectAndOpen(page);
+  await page.getByTestId("job-list").getByRole("button", { name: /composite-then-step/ }).click();
+  await page.getByTestId("failed-step-link").click();
+  await expect(page).toHaveURL(/#\/runs\/acme\/app\/1\/jobs\/2\/steps\/4$/);
+  const locator = page.getByTestId("step-locator");
+  await expect(locator).toHaveAttribute("data-state", "found");
+  await expect(locator).toContainText("Step 4: Step after composite");
+  const highlighted = page.locator(".row.highlighted");
+  await expect(highlighted).toContainText("##[error]synthetic failure in the step after the composite action");
+  await expect(highlighted).toBeInViewport();
+  // The composite action's inner output is not attributed to the failed step.
+  await expect(page.locator(".row.step-start")).toContainText('##[group]Run echo "running the step that follows the composite action"');
+  const compositeOutput = page.locator(".row").filter({ hasText: /config ok$/ });
+  await expect(compositeOutput).toHaveCount(1);
+  await expect(compositeOutput).not.toHaveClass(/in-step/);
+  expect(seen.filter((s) => s.method !== "OPTIONS").every((s) => s.method === "GET" || s.method === "HEAD")).toBe(true);
+  expect(page.url()).not.toContain("token");
 });

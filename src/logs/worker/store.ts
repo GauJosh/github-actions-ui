@@ -1,5 +1,6 @@
 // Worker-owned log text: an array of decoded chunk strings that is never joined, a line-start index,
 // and running byte, newline and CRC32 counters. Line numbers here are 0-based.
+import { createMarkerScanner, type LogMarkers } from "../../domain/steps/step-map";
 import { crc32 } from "./crc32";
 
 const ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;]*[A-Za-z]", "g");
@@ -118,6 +119,14 @@ export class LogStore {
       else hi = mid - 1;
     }
     return lo;
+  }
+
+  /** One pass over the lines received so far, collecting step markers and `##[error]` lines (no copy of the log is kept). */
+  markers(): LogMarkers {
+    const scanner = createMarkerScanner();
+    const count = this.lineCount;
+    for (let n = 0; n < count; n++) scanner.push(this.line(n));
+    return scanner.result(count);
   }
 
   /** Case-sensitive substring search across chunk boundaries. Returns 0-based line numbers, one per line. */
