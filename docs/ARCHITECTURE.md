@@ -333,6 +333,18 @@ The log worker script is served with `connect-src 'none'`.
   - Pipeline: normalise → ordered rules (each has an `evidenceType` and `ruleId`) → wrapper demotion → deduplication → ranking → top N, plus the failed-step tail window.
   - Rules are versioned (`rules@v1`, …). Changes are gated by the **regression corpus** only.
   - Held-out evaluation follows the Q10 protocol and is never used for tuning.
+- **Log display modes (§8.1, `src/domain/logs/`).** A pure line classifier runs in the log worker, over complete lines only. Each line gets a kind, a reason and a fold code.
+  - **Essential output (default)** folds:
+    - runner control markers;
+    - closed `##[group]` bodies (headers stay visible inside steps; job-setup groups fold whole; a group holding an error or warning never folds);
+    - the runner's echo of a step's script, `shell:`, `with:` and `env:`;
+    - an exact list of job-setup and cleanup messages;
+    - 3+ identical consecutive lines.
+    
+    Everything else, including unrecognised lines and action output, stays visible. **All output** shows every line unchanged. **Errors & warnings** shows `##[error]`/`##[warning]` annotations and anchored text patterns, labelled differently (a text match is not proof of failure), with context lines and the step header.
+  - Quick filters, search (case, whole word, regex with invalid-expression handling and a time budget, step scope, matching-lines-only with context) and views are built in the worker over the lines loaded so far. Nothing triggers a download. The raw log is never changed, and every folded range expands to its original lines and numbers.
+  - Preferences (mode, filters, context, search options) are kept in memory only.
+  - **Limitations:** the patterns are heuristics validated on the corpus and synthetic logs. First-party action output (e.g. checkout's git configuration commands) is not folded. Custom-action lifecycle lines stay visible unless they repeat. A pathological regex can still stall the worker for one long line.
 - **Classification (R3).** Returns `{kind, evidence[]}`, and returns an `unknown` kind when no evidence supports a specific one.
 - **Comparison.** Baseline tier A (same branch, before the failure), then tier B (default branch, before the failure), then unavailable.
   - A later successful run can be chosen manually and is always labelled as one.

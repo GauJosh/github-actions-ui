@@ -47,9 +47,13 @@ test("s09 via the run-URL shortcut: failed job from API data, log on demand, tai
   await page.getByLabel("Search log").fill("checksum mismatch");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByTestId("search-summary")).toHaveText(`${expected.hits.length} matching lines`);
+  // A new search goes to the first match; "previous" from the first wraps to the last. The line is kept in the URL.
+  await expect(page).toHaveURL(new RegExp(`/jobs/${S09.jobId}/L${expected.hits[0]}$`));
+  await expect(page.getByTestId("search-position")).toHaveText(`1 of ${expected.hits.length}`);
   const last = expected.hits.at(-1)!;
-  await page.getByTestId("search-hits").getByRole("link", { name: `Line ${last}`, exact: true }).click();
+  await page.getByRole("button", { name: "Previous match" }).click();
   await expect(page).toHaveURL(new RegExp(`/jobs/${S09.jobId}/L${last}$`));
+  await expect(page.getByTestId("search-position")).toHaveText(`${expected.hits.length} of ${expected.hits.length}`);
   const row = page.locator(`[data-line="${last}"]`);
   await expect(row).toHaveClass(/highlighted/);
   await expect(row).toContainText("checksum mismatch");
@@ -77,6 +81,8 @@ test("A8: a log above the soft limit stops at the tail; the full log loads only 
   await expect(status).toContainText("This log is 46.0 MB, above the 44.0 MB automatic-load limit");
   await expect(page.getByTestId("tail-evidence")).toContainText("Synthetic failure: expected 1 but got 2");
   await expect(page.getByText("Search: unavailable until the full log is loaded")).toBeVisible();
+  await expect(page.getByText(/Display modes and filters also need the full log/)).toBeVisible();
+  await expect(page.getByTestId("log-controls")).toHaveCount(0);
   await expect(page.getByLabel("Search log")).toHaveCount(0);
   await expect(page.getByTestId("log-view")).toHaveCount(0);
 

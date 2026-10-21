@@ -205,8 +205,8 @@ test("live mode, no step markers in the log: the step gets a clear fallback and 
   await expect(page.locator(".row.in-step")).toHaveCount(0);
   await expect(page.locator(".row.highlighted")).toHaveCount(0);
   await page.getByTestId("find-errors").click();
-  await expect(page.getByLabel("Search log")).toHaveValue("##[error]");
-  await expect(page.getByTestId("search-summary")).toHaveText("No matches");
+  await expect(page.getByRole("tab", { name: "Errors & warnings" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("log-view-summary")).toContainText("Errors & warnings: 0 error and 0 warning annotations");
 });
 
 test("live mode, a real runner log (fixture s16 served by the mocked API): the failed step after a composite action is found", async ({ page }) => {

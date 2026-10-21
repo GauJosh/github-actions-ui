@@ -87,3 +87,42 @@ describe("step markers", () => {
     }
   });
 });
+
+describe("display views in the worker", () => {
+  it("classifies only complete lines while loading; the growing last line is shown unclassified", () => {
+    const store = new LogStore();
+    store.append(enc("##[group]Run make\n##[endgroup]\nbuild out"));
+    expect(store.completeLines).toBe(2);
+    store.classify();
+    expect(store.classified.count).toBe(2);
+    store.append(enc("put done\n"));
+    store.classify();
+    expect(store.classified.count).toBe(3);
+    expect(store.text(2)).toBe("build output done");
+  });
+
+  it("answers view and view-rows messages, and returns no rows for a superseded view", async () => {
+    const { createLogWorkerHandler } = await import("./handler");
+    const replies: unknown[] = [];
+    const handle = createLogWorkerHandler(
+      (m) => {
+        if (m.type === "reply") replies.push(m.value);
+      },
+      (e) => {
+        throw e;
+      },
+    );
+    const bytes = enc("Current runner version: '2.337.0'\n##[group]Run make\n##[endgroup]\nmake: ok\n");
+    handle({ type: "bytes", buf: bytes.buffer as ArrayBuffer });
+    handle({ type: "finish", id: 1, appendTail: false });
+    const spec = { mode: "essential" as const, filters: [], context: 0, expanded: [], reveal: [] };
+    handle({ type: "view", id: 2, spec });
+    const first = replies.at(-1) as { version: number; rowCount: number; visibleLines: number };
+    expect(first).toMatchObject({ rowCount: 4, visibleLines: 2 });
+    handle({ type: "view-rows", id: 3, version: first.version, from: 0, count: 10 });
+    expect((replies.at(-1) as { rows: { t: string }[] }).rows.map((r) => r.t)).toEqual(["fold", "line", "fold", "line"]);
+    handle({ type: "view", id: 4, spec: { ...spec, mode: "all" } });
+    handle({ type: "view-rows", id: 5, version: first.version, from: 0, count: 10 });
+    expect((replies.at(-1) as { rows: unknown[] }).rows).toEqual([]);
+  });
+});

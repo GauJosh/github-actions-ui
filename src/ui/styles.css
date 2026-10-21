@@ -232,14 +232,177 @@ form input {
 .ts {
   color: var(--muted);
 }
-.hit-list {
+
+/* Log display modes, filters and search (docs/ARCHITECTURE.md §8.1) */
+.log-controls {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+.log-modes,
+.log-filters,
+.log-controls .search {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  list-style: none;
-  padding: 0;
+  gap: 6px;
+  align-items: center;
+}
+.log-modes [role="tab"] {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.log-modes [role="tab"].active {
+  border-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+  font-weight: 600;
+}
+.log-context {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.lchip,
+.toggle {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 1px 10px;
+  font: 12.5px/20px system-ui, -apple-system, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+.lchip.active,
+.toggle.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+.lchip-count {
+  margin-left: 6px;
+  color: var(--muted);
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 11.5px;
+}
+.toggle {
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-family: var(--mono);
+}
+.log-controls .search input[type="search"],
+.log-controls .search input:not([type]) {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+.log-controls .only {
+  white-space: nowrap;
+  font-size: 13px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.match-nav {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 13px;
+}
+.link-button {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+.search-error {
+  color: var(--fail);
+  margin: 0;
+  font-size: 13px;
+}
+.view-description {
+  margin: 2px 0;
+}
+.row.fold {
+  color: var(--muted);
+}
+.fold-btn {
+  border: 0;
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  color: var(--muted);
+  font: 12px/18px var(--mono);
+  border-radius: 4px;
+  padding: 0 8px;
+  margin: 1px 0;
+  cursor: pointer;
+  max-width: calc(100% - 80px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+.fold-btn:hover,
+.fold-btn:focus-visible {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.fold-range {
+  opacity: 0.8;
+}
+.kbadge {
+  font: 600 10.5px/16px var(--mono);
+  padding: 0 5px;
+  margin-right: 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  display: inline-block;
+}
+.kbadge-error {
+  color: var(--fail);
+}
+.kbadge-warning {
+  color: var(--warn);
+}
+.kbadge-notice {
+  color: var(--accent);
+}
+.kbadge-error-text,
+.kbadge-warning-text,
+.kbadge-test-failed {
+  border-style: dashed;
+  color: var(--muted);
+}
+.row.k-error .tx {
+  color: var(--fail);
+}
+.row.k-warning .tx {
+  color: var(--warn);
+}
+.row.k-command .tx {
+  font-weight: 600;
+}
+.row.k-script .tx,
+.row.k-settings .tx,
+.row.k-control .tx,
+.row.k-runner .tx {
+  color: var(--muted);
+}
+.row mark {
+  background: color-mix(in srgb, var(--warn) 35%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+.step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .diagnostics dl {
   display: grid;

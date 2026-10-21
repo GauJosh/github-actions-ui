@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Environment } from "../app/environment";
+import { compileSearch, type ViewSpec, type ViewSummary } from "../domain/logs/view";
 import { hasLogOutput, locateStep, mapSteps, targetLine, type LogMarkers, type StepLocation } from "../domain/steps/step-map";
 import type { Job, JobRef, Step } from "../domain/types";
 import type { LogLoader, LogSnapshot } from "../logs/download/loader";
 import { count, logStatusText, mb } from "./copy";
+import { LogControls, ViewDescription } from "./LogControls";
+import { setLogPrefs, useLogPrefs, type LogPrefs } from "./log-prefs";
 import { VirtualLog } from "./VirtualLog";
 
 /** Links that keep the user's place (run, phase, view, job and step) in the URL. */
@@ -29,18 +32,37 @@ export function LogPanel({ env, jobRef, ...rest }: PanelProps & { env: Environme
 
 const ERROR_MARKER = "##[error]";
 
+/** `value`, updated at most once per `ms` (0: on the next tick). Keeps view rebuilds cheap while a log streams in. */
+function useThrottled<T>(value: T, ms: number): T {
+  const [shown, setShown] = useState(value);
+  const last = useRef(0);
+  useEffect(() => {
+    const t = setTimeout(
+      () => {
+        last.current = Date.now();
+        setShown(value);
+      },
+      Math.max(0, last.current + ms - Date.now()),
+    );
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return shown;
+}
+
 function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loader: LogLoader }) {
   const snap = useSyncExternalStore(
     useCallback((onChange: () => void) => loader.subscribe(onChange), [loader]),
     () => loader.snapshot,
   );
+  const prefs = useLogPrefs();
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<{ query: string; lines: number[]; capped: boolean; partial: boolean } | null>(null);
-  const fetchRows = useCallback((from: number, n: number) => loader.rows("full", from, n), [loader]);
+  const [applied, setApplied] = useState("");
+  const [expanded, setExpanded] = useState<[number, number][]>([]);
+  const fetchRows = useCallback((version: number, from: number, n: number) => loader.viewRows(version, from, n), [loader]);
   const status = snap.status;
   const showFull = snap.lines > 0 && ["loading", "cancelled", "complete", "incomplete"].includes(status);
   const showTail = snap.tail !== undefined && status !== "complete";
-  const searchable = showFull;
+  const partial = status !== "complete";
 
   // Step markers are scanned once per completed load (a worker restart or retry gives a new load).
   const loadKey = `${snap.restarts}:${snap.crc32 ?? ""}`;
@@ -69,17 +91,82 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
     if (step !== undefined) locatorRef.current?.scrollIntoView({ block: "start" });
   }, [step]);
 
-  async function search(q: string) {
-    const result = await loader.search(q);
-    if (result) setHits({ query: q, ...result, partial: loader.snapshot.status !== "complete" });
+  // The display view (mode, filters, search) is built in the worker over the lines loaded so far; nothing here
+  // triggers a download. While loading, it is rebuilt at most once a second.
+  const lines = useThrottled(snap.lines, status === "loading" ? 1000 : 0);
+  const stepRange = segment ? { start: segment.startLine, end: segment.endLine } : undefined;
+  const spec: ViewSpec = useMemo(
+    () => ({
+      mode: prefs.mode,
+      filters: prefs.filters,
+      context: prefs.context,
+      expanded,
+      reveal: target !== undefined ? [target - 1] : [],
+      ...(applied && {
+        search: {
+          query: applied,
+          caseSensitive: prefs.caseSensitive,
+          wholeWord: prefs.wholeWord,
+          regex: prefs.regex,
+          only: prefs.only,
+          ...(prefs.scope === "step" && stepRange && { scope: [stepRange.start - 1, stepRange.end - 1] as [number, number] }),
+        },
+      }),
+    }),
+    [prefs, expanded, target, applied, stepRange?.start, stepRange?.end], // eslint-disable-line react-hooks/exhaustive-deps -- the step range by value
+  );
+  // Scrolls to the target once per target and mode, using only a view built for them.
+  const scrollKey = `${target}|${prefs.mode}|${prefs.filters.join()}|${prefs.only}|${applied}`;
+  const [view, setView] = useState<{ key: string; scrollKey: string; summary: ViewSummary } | null>(null);
+  const viewKey = `${snap.restarts}:${JSON.stringify(spec)}:${lines}`;
+  useEffect(() => {
+    if (!showFull) return;
+    let live = true;
+    void loader.view(spec).then((summary) => {
+      if (live && summary) setView({ key: viewKey, scrollKey, summary });
+    });
+    return () => {
+      live = false;
+    };
+  }, [loader, showFull, spec, viewKey, scrollKey]);
+  const summary = showFull ? (view?.summary ?? null) : null;
+  const matcher = useMemo(() => {
+    const m = applied ? compileSearch({ query: applied, caseSensitive: prefs.caseSensitive, wholeWord: prefs.wholeWord, regex: prefs.regex }) : null;
+    return m && "error" in m ? null : m;
+  }, [applied, prefs.caseSensitive, prefs.wholeWord, prefs.regex]);
+
+  // Search navigation moves the URL's line, so the place survives reloads and view switches.
+  const matches = summary?.matches ?? [];
+  const current = target !== undefined && matches.includes(target - 1) ? matches.indexOf(target - 1) : null;
+  function goToLine(n: number) {
+    window.location.replace(links.line(n + 1));
   }
-  function runSearch(event: React.FormEvent) {
-    event.preventDefault();
-    void search(query);
+  function move(delta: 1 | -1) {
+    if (matches.length === 0) return;
+    const from = target !== undefined ? target - 1 : -1;
+    const next = current !== null ? matches[(current + delta + matches.length) % matches.length]! : delta > 0 ? (matches.find((m) => m > from) ?? matches[0]!) : ([...matches].reverse().find((m) => m < from) ?? matches[matches.length - 1]!);
+    goToLine(next);
+  }
+  // After a new search, go to the first match.
+  const jumped = useRef("");
+  useEffect(() => {
+    const key = `${applied}:${JSON.stringify(spec.search ?? null)}`;
+    if (!applied || !summary || jumped.current === key || summary.matches.length === 0) return;
+    jumped.current = key;
+    if (current === null) goToLine(summary.matches[0]!);
+  });
+  function runSearch() {
+    jumped.current = "";
+    setApplied(query);
+  }
+  function expand(start: number, end: number) {
+    setExpanded((e) => [...e, [start, end]]);
+  }
+  function showMode(mode: LogPrefs["mode"]) {
+    setLogPrefs({ mode, filters: [] });
   }
   function findErrors() {
-    setQuery(ERROR_MARKER);
-    void search(ERROR_MARKER);
+    showMode("problems");
   }
 
   return (
@@ -117,6 +204,9 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
           showingLine={line}
           links={links}
           onFindErrors={findErrors}
+          mode={prefs.mode}
+          onMode={showMode}
+          onExpand={expand}
         />
       )}
 
@@ -137,39 +227,43 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
         </div>
       )}
 
-      {status === "tail-only" && <p className="note">Search: unavailable until the full log is loaded. Step boundaries: unavailable until the full log is loaded.</p>}
-
-      {searchable && (
-        <form className="search" onSubmit={runSearch} role="search">
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search log (case-sensitive)" aria-label="Search log" />
-          <button type="submit" disabled={!query}>
-            Search
-          </button>
-          {hits && (
-            <span className="hits" data-testid="search-summary">
-              {hits.lines.length === 0 ? "No matches" : `${count(hits.lines.length)}${hits.capped ? "+" : ""} matching lines`}
-              {hits.partial && " in the bytes loaded so far"}
-            </span>
-          )}
-        </form>
-      )}
-      {hits && hits.lines.length > 0 && (
-        <ul className="hit-list" data-testid="search-hits">
-          {hits.lines.slice(0, 50).map((n) => (
-            <li key={n}>
-              <a href={links.line(n + 1)}>Line {n + 1}</a>
-            </li>
-          ))}
-        </ul>
+      {status === "tail-only" && (
+        <p className="note">
+          Search: unavailable until the full log is loaded. Step boundaries: unavailable until the full log is loaded. Display modes and filters also need the full log; the end of the log above is shown
+          unchanged.
+        </p>
       )}
 
       {showFull && (
+        <LogControls
+          prefs={prefs}
+          summary={summary}
+          partial={partial}
+          query={query}
+          onQuery={setQuery}
+          applied={applied}
+          onSearch={runSearch}
+          step={stepRange}
+          current={current}
+          onMove={move}
+          expanded={expanded.length}
+          onCollapse={() => setExpanded([])}
+        />
+      )}
+      {showFull && summary && <ViewDescription prefs={prefs} summary={summary} partial={partial} />}
+
+      {showFull && summary && (
         <VirtualLog
-          lineCount={snap.lines}
+          rowCount={summary.rowCount}
+          version={summary.version}
           fetchRows={fetchRows}
+          scrollToRow={view?.scrollKey === scrollKey ? summary.revealRows[0] : undefined}
+          scrollKey={scrollKey}
           highlight={target}
           range={segment ? { start: segment.startLine, end: segment.endLine, marks: segment.errorLines } : undefined}
+          matcher={matcher}
           hrefFor={links.line}
+          onExpand={expand}
         />
       )}
       {line !== undefined && showFull && line > snap.lines && <p className="note">Line {line} is not loaded yet.</p>}
@@ -222,10 +316,14 @@ type LocatorProps = {
   showingLine?: number;
   links: LogLinks;
   onFindErrors(): void;
+  mode: LogPrefs["mode"];
+  onMode(mode: LogPrefs["mode"]): void;
+  /** Shows original lines (0-based, inclusive) that the current mode folds. */
+  onExpand(start: number, end: number): void;
 };
 
 /** Where the selected step's output is in the log, or why it cannot be shown and what to do instead. */
-function StepLocator({ anchorRef, job, step, stepInfo, snap, scanFailed, location, showingLine, links, onFindErrors }: LocatorProps) {
+function StepLocator({ anchorRef, job, step, stepInfo, snap, scanFailed, location, showingLine, links, onFindErrors, mode, onMode, onExpand }: LocatorProps) {
   const failed = FAILED.has(stepInfo?.conclusion ?? "");
   const title = stepInfo ? `Step ${step}: ${stepInfo.name}` : `Step ${step}`;
   let state: string;
@@ -275,6 +373,7 @@ function StepLocator({ anchorRef, job, step, stepInfo, snap, scanFailed, locatio
     const { segment, approximate, issues } = location;
     state = approximate ? "approximate" : "found";
     const shownError = failed && segment.errorLines.length > 0 && showingLine === undefined;
+    const focus = showingLine ?? (shownError ? segment.errorLines[0]! : segment.startLine);
     body = (
       <>
         <p data-testid="step-range">
@@ -293,6 +392,24 @@ function StepLocator({ anchorRef, job, step, stepInfo, snap, scanFailed, locatio
             {segment.errorLines.length > 12 && ` and ${count(segment.errorLines.length - 12)} more`}
           </p>
         )}
+        <p className="step-actions" data-testid="step-actions">
+          <button type="button" onClick={() => onExpand(focus - 1 - 20, focus - 1 + 20)}>
+            Show 20 lines around line {focus}
+          </button>
+          <button type="button" onClick={() => onExpand(segment.startLine - 1, segment.endLine - 1)}>
+            Unfold this step's lines
+          </button>
+          {mode !== "all" && (
+            <button type="button" onClick={() => onMode("all")}>
+              All output
+            </button>
+          )}
+          {mode !== "problems" && (
+            <button type="button" onClick={() => onMode("problems")}>
+              Errors &amp; warnings
+            </button>
+          )}
+        </p>
         {approximate ? (
           <div className="step-warning" data-testid="step-approximate">
             <strong>Step boundaries approximate.</strong> These lines may include output from neighbouring steps, or miss some of this step's output.
@@ -342,7 +459,7 @@ function Fallback({ failed, issues, onFindErrors }: { failed: boolean; issues: s
       {failed ? (
         <p>
           <button onClick={onFindErrors} data-testid="find-errors">
-            Find error lines in the whole log
+            Show errors and warnings in the whole log
           </button>{" "}
           The step failed; its error lines are usually marked <code>{ERROR_MARKER}</code>.
         </p>

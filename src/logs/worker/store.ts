@@ -1,5 +1,7 @@
 // Worker-owned log text: an array of decoded chunk strings that is never joined, a line-start index,
 // and running byte, newline and CRC32 counters. Line numbers here are 0-based.
+import { LineClassifier } from "../../domain/logs/classify";
+import type { ViewSource } from "../../domain/logs/view";
 import { createMarkerScanner, type LogMarkers } from "../../domain/steps/step-map";
 import { crc32 } from "./crc32";
 
@@ -7,7 +9,7 @@ const ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;]*[A-Za-z]", "g");
 
 export type StoreStats = { bytes: number; lines: number; newlines: number; crc32: number };
 
-export class LogStore {
+export class LogStore implements ViewSource {
   private decoder = new TextDecoder("utf-8");
   private chunks: string[] = [];
   private chunkStarts: number[] = [];
@@ -18,6 +20,9 @@ export class LogStore {
   private newlines = 0;
   private crc = 0;
   private skipToNewline: boolean;
+  private finished = false;
+  /** Line classification for display modes, extended lazily over complete lines (docs/ARCHITECTURE.md §8.1). */
+  readonly classified = new LineClassifier();
 
   /** `startsMidLog`: the bytes begin at an arbitrary offset, so the first (partial) line is dropped. */
   constructor(options: { startsMidLog?: boolean } = {}) {
@@ -32,6 +37,7 @@ export class LogStore {
 
   finish(): void {
     this.push(this.decoder.decode());
+    this.finished = true;
   }
 
   private push(text: string): void {
@@ -66,6 +72,24 @@ export class LogStore {
     return this.lineStarts[this.lineStartCount - 1] === this.chars ? this.lineStartCount - 1 : this.lineStartCount;
   }
 
+  /** Lines whose text is final: all of them once finished, otherwise those ended by a newline. */
+  get completeLines(): number {
+    const count = this.lineCount;
+    if (this.finished || count === 0) return count;
+    return this.lineStarts[this.lineStartCount - 1] === this.chars ? count : count - 1;
+  }
+
+  /** Classifies the complete lines not classified yet. */
+  classify(): void {
+    const upTo = this.completeLines;
+    for (let n = this.classified.count; n < upTo; n++) this.classified.push(this.line(n));
+  }
+
+  /** Display text of one line, with ANSI escape sequences removed. */
+  text(n: number): string {
+    return this.line(n).replace(ANSI, "");
+  }
+
   stats(): StoreStats {
     return { bytes: this.bytes, lines: this.lineCount, newlines: this.newlines, crc32: this.crc };
   }
@@ -80,7 +104,7 @@ export class LogStore {
   rows(from: number, count: number): string[] {
     const end = Math.min(this.lineCount, from + count);
     const out: string[] = [];
-    for (let n = Math.max(0, from); n < end; n++) out.push(this.line(n).replace(ANSI, ""));
+    for (let n = Math.max(0, from); n < end; n++) out.push(this.text(n));
     return out;
   }
 

@@ -14,7 +14,8 @@ import type { LogMarkers } from "../../domain/steps/step-map";
 import type { ApiFailure } from "../../domain/types";
 import { GitHubError, classifyFailure } from "../../github/client";
 import type { ReadMethod, TransportResponse } from "../../github/transport";
-import type { RowsResult, SearchResult, TailSummary } from "../worker/protocol";
+import type { ViewRow, ViewSpec, ViewSummary } from "../../domain/logs/view";
+import type { RowsResult, SearchResult, TailSummary, ViewRowsResult } from "../worker/protocol";
 import type { StoreStats } from "../worker/store";
 import { WorkerFailed, WorkerSession, type WorkerPort } from "./worker-session";
 
@@ -216,6 +217,28 @@ export class LogLoader {
       return await session.ask<SearchResult>({ type: "search", query, cap });
     } catch {
       return null;
+    }
+  }
+
+  /** Builds the display view over the lines loaded so far. Null when no worker holds the log. */
+  async view(spec: ViewSpec): Promise<ViewSummary | null> {
+    const session = this.session;
+    if (!session || session.failed) return null;
+    try {
+      return await session.ask<ViewSummary>({ type: "view", spec });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Rows of view `version`; empty once a newer view was built. */
+  async viewRows(version: number, from: number, count: number): Promise<ViewRow[]> {
+    const session = this.session;
+    if (!session || session.failed) return [];
+    try {
+      return (await session.ask<ViewRowsResult>({ type: "view-rows", version, from, count })).rows;
+    } catch {
+      return [];
     }
   }
 

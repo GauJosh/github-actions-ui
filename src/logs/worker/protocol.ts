@@ -1,4 +1,5 @@
 // Typed messages between the main thread and the log worker (A6). ArrayBuffers are always transferred.
+import type { ViewRow, ViewSpec, ViewSummary } from "../../domain/logs/view";
 import type { LogMarkers } from "../../domain/steps/step-map";
 import type { StoreStats } from "./store";
 
@@ -12,13 +13,18 @@ export type ToWorker =
   | { type: "search"; id: number; query: string; cap: number }
   /** Step markers and error lines of the full log, for step mapping (docs/ARCHITECTURE.md §8). */
   | { type: "markers"; id: number }
+  /** Builds the display view (mode, filters, search) over the full log's lines so far (docs/ARCHITECTURE.md §8.1). */
+  | { type: "view"; id: number; spec: ViewSpec }
+  /** Rows of the current view; empty when `version` is no longer current. */
+  | { type: "view-rows"; id: number; version: number; from: number; count: number }
   /** Fixture-mode fault injection only (A9 tests); never sent in live mode. */
   | { type: "inject-failure" };
 
 export type TailSummary = { lines: string[]; lineCount: number };
 export type RowsResult = { from: number; lines: string[] };
 export type SearchResult = { lines: number[]; capped: boolean };
+export type ViewRowsResult = { version: number; from: number; rows: ViewRow[] };
 
 export type FromWorker =
   | { type: "ack"; n: number }
-  | { type: "reply"; id: number; value: TailSummary | StoreStats | RowsResult | SearchResult | LogMarkers | null };
+  | { type: "reply"; id: number; value: TailSummary | StoreStats | RowsResult | SearchResult | LogMarkers | ViewSummary | ViewRowsResult | null };

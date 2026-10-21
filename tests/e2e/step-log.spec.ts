@@ -38,8 +38,12 @@ test("a failed CD step opens the log at its first error line, highlighted, in vi
   await expect(highlighted).toContainText("##[error][synthetic] Smoke tests failed: health check returned 503");
   await expect(highlighted).toBeInViewport();
   await expect(page.locator('.row[data-line="8"]')).toHaveClass(/in-step step-start/);
+  // Essential output (the default) folds the previous step's `##[endgroup]`; All output shows every line.
+  await expect(page.locator('.row[data-line="7"]')).toHaveCount(0);
+  await page.getByRole("tab", { name: "All output" }).click();
   await expect(page.locator('.row[data-line="7"]')).not.toHaveClass(/in-step/);
   await expect(page.locator('.row[data-line="21"]')).not.toHaveClass(/in-step/);
+  await expect(highlighted).toHaveAttribute("data-line", "18");
   await expect(page.getByTestId("job-details").locator('.step[aria-current="step"]')).toContainText("Smoke tests");
   expect(github).toEqual([]);
 });

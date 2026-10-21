@@ -26,6 +26,7 @@ const FORBIDDEN = [
   "Demo scenario", // fixture-only scenario strip
   "shared-workflows", // synthetic shared-workflow repository
   "action-cd-policy", // synthetic shared-workflow steps
+  "an unrecognised line that must stay visible", // synthetic noisy log (tools/fixture-server/noisy-log.ts)
   "fixtures.lock", // fixture server
   "gunzip",
   "raw.githubusercontent",

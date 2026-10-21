@@ -1,5 +1,6 @@
 // Worker message handling, separated from the worker entry so tests can run it in-process.
 import { TAIL_PREVIEW_LINES } from "../../config";
+import { LogView } from "../../domain/logs/view";
 import type { FromWorker, ToWorker } from "./protocol";
 import { LogStore } from "./store";
 
@@ -7,6 +8,7 @@ export function createLogWorkerHandler(post: (message: FromWorker) => void, fail
   let full = new LogStore();
   let tail: LogStore | null = null;
   let tailBytes: Uint8Array | null = null;
+  let view = new LogView();
 
   return (message: ToWorker): void => {
     // Fixture-mode fault injection (A9 tests). Compiled out of production builds entirely.
@@ -31,6 +33,7 @@ export function createLogWorkerHandler(post: (message: FromWorker) => void, fail
         return;
       case "reset":
         full = new LogStore();
+        view = new LogView();
         post({ type: "reply", id: message.id, value: null });
         return;
       case "finish":
@@ -53,6 +56,15 @@ export function createLogWorkerHandler(post: (message: FromWorker) => void, fail
       case "markers":
         post({ type: "reply", id: message.id, value: full.markers() });
         return;
+      case "view":
+        full.classify();
+        post({ type: "reply", id: message.id, value: view.build(full, message.spec) });
+        return;
+      case "view-rows": {
+        const current = message.version === view.currentVersion;
+        post({ type: "reply", id: message.id, value: { version: message.version, from: message.from, rows: current ? view.rowsAt(message.from, message.count) : [] } });
+        return;
+      }
     }
   };
 }

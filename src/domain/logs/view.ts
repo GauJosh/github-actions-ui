@@ -1,0 +1,343 @@
+// Log display modes, quick filters and search over classified lines (docs/ARCHITECTURE.md §8.1). Pure.
+//
+// A view is a list of rows: each row is one original line, or one folded range of original lines that the user can
+// expand. Line numbers stay the original ones. Nothing is removed from the log; a view only decides what is shown.
+import { FOLD, FOLDS, LINE_KINDS, kindOf, reasonOf, type LineClassifier, type LineKind } from "./classify";
+
+export type LogMode = "essential" | "all" | "problems";
+
+export const FILTERS = {
+  errors: { label: "Errors", kinds: ["error", "error-text", "test-failed"] },
+  warnings: { label: "Warnings", kinds: ["warning", "warning-text"] },
+  commands: { label: "Commands", kinds: ["command", "script"] },
+  tests: { label: "Test/build results", kinds: ["test", "test-failed"] },
+  actions: { label: "Action output", kinds: ["action-output"] },
+  settings: { label: "Inputs & environment", kinds: ["settings"] },
+  runner: { label: "Runner messages", kinds: ["runner", "control", "section", "notice", "debug"] },
+  unclassified: { label: "Unclassified", kinds: ["output"] },
+} as const satisfies Record<string, { label: string; kinds: readonly LineKind[] }>;
+export type FilterKey = keyof typeof FILTERS;
+export const FILTER_KEYS = Object.keys(FILTERS) as FilterKey[];
+
+export type SearchOptions = { query: string; caseSensitive: boolean; wholeWord: boolean; regex: boolean };
+export type SearchSpec = SearchOptions & {
+  /** 0-based inclusive line range to search (the selected step), or the whole log. */
+  scope?: [number, number];
+  /** Show only matching lines (with context) instead of the mode's lines. */
+  only: boolean;
+};
+
+export type ViewSpec = {
+  mode: LogMode;
+  filters: FilterKey[];
+  /** Lines shown before and after each error, filtered line or match. */
+  context: number;
+  /** 0-based inclusive ranges the user expanded. */
+  expanded: [number, number][];
+  /** 0-based lines that must be visible (the target line, the current match). */
+  reveal: number[];
+  search?: SearchSpec;
+};
+
+/** What the view shows. Lines are 0-based. */
+export type ViewSummary = {
+  version: number;
+  rowCount: number;
+  lineCount: number;
+  visibleLines: number;
+  folds: number;
+  matches: number[];
+  matchesCapped: boolean;
+  searchError?: string;
+  /** Set when a regular-expression search hit its time budget; lines after this one were not searched. */
+  searchStoppedAt?: number;
+  /** Lines per filter, and per kind, over the lines classified so far. */
+  counts: Record<FilterKey, number>;
+  kindCounts: Record<LineKind, number>;
+  /** Row index of each `reveal` line. */
+  revealRows: number[];
+};
+
+export type ViewRow =
+  | { t: "line"; n: number; text: string; kind: LineKind; reason: string }
+  | { t: "fold"; start: number; end: number; label: string; kind: "fold" | "gap" };
+
+/** What the view needs from the log store. */
+export interface ViewSource {
+  /** Lines available. */
+  readonly lineCount: number;
+  /** Lines whose text is final (the last line may still be growing while loading). */
+  readonly completeLines: number;
+  readonly classified: LineClassifier;
+  /** Display text of a line (ANSI escapes removed). */
+  text(n: number): string;
+}
+
+export const MAX_MATCHES = 10_000;
+const SEARCH_BUDGET_MS = 4_000;
+
+// ---- search -------------------------------------------------------------------------------------
+
+export type Matcher = { test(text: string): boolean; ranges(text: string): [number, number][] };
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Builds a matcher, or explains why the expression is invalid. Null for an empty query. */
+export function compileSearch(o: SearchOptions): Matcher | { error: string } | null {
+  if (!o.query) return null;
+  if (!o.regex && !o.wholeWord) {
+    const needle = o.caseSensitive ? o.query : o.query.toLowerCase();
+    const fold = (t: string) => (o.caseSensitive ? t : t.toLowerCase());
+    return {
+      test: (t) => fold(t).includes(needle),
+      ranges: (t) => {
+        const out: [number, number][] = [];
+        const hay = fold(t);
+        for (let i = hay.indexOf(needle); i !== -1 && out.length < 100; i = hay.indexOf(needle, i + needle.length)) out.push([i, i + needle.length]);
+        return out;
+      },
+    };
+  }
+  let source = o.regex ? o.query : escape(o.query);
+  if (o.wholeWord) source = `(?<![\\w])(?:${source})(?![\\w])`;
+  let re: RegExp;
+  try {
+    re = new RegExp(source, o.caseSensitive ? "g" : "gi");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message.replace(/^Invalid regular expression: /, "") : "invalid expression" };
+  }
+  return {
+    test: (t) => {
+      re.lastIndex = 0;
+      return re.test(t);
+    },
+    ranges: (t) => {
+      const out: [number, number][] = [];
+      re.lastIndex = 0;
+      for (let m = re.exec(t); m && out.length < 100; m = re.exec(t)) {
+        if (m[0].length === 0) {
+          re.lastIndex++;
+          continue;
+        }
+        out.push([m.index, m.index + m[0].length]);
+      }
+      return out;
+    },
+  };
+}
+
+type SearchCache = { key: string; upTo: number; matches: number[]; capped: boolean };
+
+type SearchRun = { cache: SearchCache; matches: number[]; capped: boolean; stoppedAt?: number };
+
+function runSearch(src: ViewSource, spec: SearchSpec, matcher: Matcher, cache: SearchCache | null): SearchRun {
+  const key = JSON.stringify([spec.query, spec.caseSensitive, spec.wholeWord, spec.regex, spec.scope]);
+  const [lo, hi] = spec.scope ?? [0, Number.MAX_SAFE_INTEGER];
+  const end = Math.min(src.lineCount, hi + 1);
+  const stable = Math.min(src.completeLines, end);
+  // Lines already searched with the same query are not searched again while the log keeps loading.
+  const reuse = cache && cache.key === key && cache.upTo <= stable ? cache : null;
+  const matches = reuse ? reuse.matches.slice() : [];
+  let capped = reuse?.capped ?? false;
+  let stoppedAt: number | undefined;
+  const t0 = Date.now();
+  let n = reuse ? reuse.upTo : lo;
+  let upTo = stable;
+  for (; n < end && !capped; n++) {
+    if (spec.regex && (n & 2047) === 0 && Date.now() - t0 > SEARCH_BUDGET_MS) {
+      stoppedAt = n;
+      upTo = Math.min(n, stable);
+      break;
+    }
+    if (matcher.test(src.text(n))) {
+      if (matches.length === MAX_MATCHES) {
+        capped = true;
+        break;
+      }
+      matches.push(n);
+    }
+  }
+  if (capped) upTo = Math.min(n, stable);
+  // Matches in the still-growing last line are not cached.
+  const next: SearchCache = { key, upTo, matches: matches.filter((m) => m < upTo), capped };
+  return { cache: next, matches, capped, ...(stoppedAt !== undefined && { stoppedAt }) };
+}
+
+// ---- view ---------------------------------------------------------------------------------------
+
+export class LogView {
+  /** Row value ≥ 0: an original line; < 0: fold index -(i + 1). */
+  private rows = new Int32Array(0);
+  private foldStart: number[] = [];
+  private foldEnd: number[] = [];
+  private foldKind: ("fold" | "gap")[] = [];
+  private searchCache: SearchCache | null = null;
+  private version = 0;
+  private src: ViewSource | null = null;
+  private matcher: Matcher | null = null;
+
+  build(src: ViewSource, spec: ViewSpec): ViewSummary {
+    this.src = src;
+    const total = src.lineCount;
+    const c = src.classified;
+    const classified = Math.min(c.count, total);
+    const ctx = Math.max(0, Math.min(200, Math.floor(spec.context)));
+
+    // Search.
+    let matches: number[] = [];
+    let matchesCapped = false;
+    let searchError: string | undefined;
+    let searchStoppedAt: number | undefined;
+    this.matcher = null;
+    if (spec.search) {
+      const compiled = compileSearch(spec.search);
+      if (compiled && "error" in compiled) searchError = compiled.error;
+      else if (compiled) {
+        this.matcher = compiled;
+        const run = runSearch(src, spec.search, compiled, this.searchCache);
+        this.searchCache = run.cache;
+        matches = run.matches;
+        matchesCapped = run.capped;
+        searchStoppedAt = run.stoppedAt;
+      }
+    }
+
+    // Visibility.
+    const visible = new Uint8Array(total);
+    const mark = (from: number, to: number) => visible.fill(1, Math.max(0, from), Math.min(total, to + 1));
+    const selected = new Set<number>();
+    for (const f of spec.filters) for (const k of FILTERS[f].kinds) selected.add(LINE_KINDS.indexOf(k));
+    if (spec.mode === "problems") for (const f of ["errors", "warnings"] as const) for (const k of FILTERS[f].kinds) selected.add(LINE_KINDS.indexOf(k));
+    let gapKind: "fold" | "gap" = "fold";
+
+    if (spec.search?.only && this.matcher) {
+      gapKind = "gap";
+      for (const m of matches) mark(m - ctx, m + ctx);
+    } else if (selected.size > 0) {
+      gapKind = "gap";
+      // Each problem line also shows the header of the step it is in, as related evidence.
+      const withHeader = spec.mode === "problems" || spec.filters.includes("errors") || spec.filters.includes("warnings");
+      let h = -1;
+      for (let n = 0; n < classified; n++) {
+        while (h + 1 < c.headers.length && c.headers[h + 1]! <= n) h++;
+        if (!selected.has(c.kinds[n]!)) continue;
+        mark(n - ctx, n + ctx);
+        if (withHeader && h >= 0) visible[c.headers[h]!] = 1;
+      }
+    } else if (spec.mode === "essential") {
+      for (let n = 0; n < classified; n++) if (c.folds[n] === FOLD.none) visible[n] = 1;
+    } else visible.fill(1, 0, classified);
+    // Lines not classified yet (the still-growing last line) are shown as they are.
+    visible.fill(1, classified, total);
+    for (const [a, b] of spec.expanded) mark(a, b);
+    for (const r of spec.reveal) if (r >= 0 && r < total) visible[r] = 1;
+
+    // Rows.
+    const rows = new Int32Array(total);
+    this.foldStart = [];
+    this.foldEnd = [];
+    this.foldKind = [];
+    let count = 0;
+    let shown = 0;
+    for (let n = 0; n < total; ) {
+      if (visible[n]) {
+        rows[count++] = n++;
+        shown++;
+        continue;
+      }
+      const start = n;
+      while (n < total && !visible[n]) n++;
+      this.foldStart.push(start);
+      this.foldEnd.push(n - 1);
+      this.foldKind.push(gapKind);
+      rows[count++] = -this.foldStart.length;
+    }
+    this.rows = rows.subarray(0, count);
+
+    const counts = {} as Record<FilterKey, number>;
+    for (const f of Object.keys(FILTERS) as FilterKey[]) {
+      const kinds = new Set(FILTERS[f].kinds.map((k) => LINE_KINDS.indexOf(k)));
+      counts[f] = [...kinds].reduce((sum, k) => sum + (c.counts[k] ?? 0), 0);
+    }
+
+    return {
+      version: ++this.version,
+      rowCount: count,
+      lineCount: total,
+      visibleLines: shown,
+      folds: this.foldStart.length,
+      matches,
+      matchesCapped,
+      ...(searchError !== undefined && { searchError }),
+      ...(searchStoppedAt !== undefined && { searchStoppedAt }),
+      counts,
+      kindCounts: Object.fromEntries(LINE_KINDS.map((k, i) => [k, c.counts[i] ?? 0])) as Record<LineKind, number>,
+      revealRows: spec.reveal.map((r) => this.rowOf(r)),
+    };
+  }
+
+  private rowStart(r: number): number {
+    const v = this.rows[r]!;
+    return v >= 0 ? v : this.foldStart[-v - 1]!;
+  }
+
+  /** The row showing a line (the fold row when the line is folded), or -1. */
+  rowOf(line: number): number {
+    let lo = 0;
+    let hi = this.rows.length - 1;
+    if (hi < 0 || line < 0) return -1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.rowStart(mid) <= line) lo = mid;
+      else hi = mid - 1;
+    }
+    const v = this.rows[lo]!;
+    if (v >= 0) return v === line ? lo : -1;
+    return line <= this.foldEnd[-v - 1]! ? lo : -1;
+  }
+
+  get currentVersion(): number {
+    return this.version;
+  }
+
+  rowsAt(from: number, count: number): ViewRow[] {
+    const src = this.src;
+    if (!src) return [];
+    const c = src.classified;
+    const out: ViewRow[] = [];
+    const end = Math.min(this.rows.length, from + count);
+    for (let r = Math.max(0, from); r < end; r++) {
+      const v = this.rows[r]!;
+      if (v >= 0) {
+        const classified = v < c.count;
+        out.push({ t: "line", n: v, text: src.text(v), kind: classified ? kindOf(c.kinds[v]!) : "output", reason: classified ? reasonOf(c.reasons[v]!) : "not classified yet (line still loading)" });
+      } else {
+        const i = -v - 1;
+        const start = this.foldStart[i]!;
+        const fend = this.foldEnd[i]!;
+        const kind = this.foldKind[i]!;
+        out.push({ t: "fold", start, end: fend, kind, label: kind === "gap" ? "" : foldLabel(c, start, fend) });
+      }
+    }
+    return out;
+  }
+}
+
+/** Describes what a folded range holds, e.g. "runner setup · 3 groups: “Runner Image”, “Operating System”, …". */
+export function foldLabel(c: LineClassifier, start: number, end: number): string {
+  const codes = new Set<number>();
+  for (let n = start; n <= end && n < c.count; n++) codes.add(c.folds[n]!);
+  const parts: string[] = [];
+  const groups = c.groups.filter((g) => g.start <= end && g.end >= start && !g.name.startsWith("Run "));
+  for (const code of [FOLD.setup, FOLD.definition, FOLD.group, FOLD.repeat, FOLD.cleanup, FOLD.control]) {
+    if (!codes.has(code)) continue;
+    if (code === FOLD.group && groups.length > 0) {
+      const names = groups.slice(0, 2).map((g) => `“${g.name}”`);
+      parts.push(groups.length === 1 ? `group ${names[0]}` : `${groups.length} groups: ${names.join(", ")}${groups.length > 2 ? ", …" : ""}`);
+    } else if (code === FOLD.definition) parts.push("step script and settings echoed by the runner");
+    else if (code === FOLD.repeat) parts.push("repeated identical lines");
+    else if (code === FOLD.control && codes.size > 1) continue;
+    else parts.push(FOLDS[code]);
+  }
+  return parts.join(" · ");
+}
