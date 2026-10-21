@@ -1,6 +1,7 @@
-// Environment grouping regressions (SYNTHETIC workflows). The pattern that was mis-grouped: promotion checks named
-// "Verify Ready to Implement", one before PROD and one before PROD-DR, that declare no environment and need DEV's
-// validation. They were put in DEV because DEV was their nearest upstream deployment.
+// Environment grouping regressions (SYNTHETIC workflows, shaped like a real promotion pipeline). What went wrong:
+//   - two readiness checks with the same display name ("Verify Ready to Implement", one before PROD and one before
+//     PROD-DR) could not be matched to their definitions, so they were drawn without edges next to DEV;
+//   - a change-record job after TEST that STAGE needs was shown "between TEST and STAGE" instead of in TEST.
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import type { WorkflowFileRef } from "../graph/build";
@@ -33,49 +34,91 @@ jobs:
 `);
 const envTree = (): WorkflowTree => ({ file: file(".github/workflows/env.yml"), definition: ENV, calls: new Map() });
 
-describe("promotion checks between environments (the reported pattern)", () => {
+describe("promotion pipeline: change records and readiness checks (the reported pattern)", () => {
   const CD = def(`
 jobs:
   deploy-dev: { name: DEV, uses: ./.github/workflows/env.yml, with: { environment: dev } }
   dev-validation: { name: DEV validation, needs: deploy-dev, environment: dev, steps: [{ run: ./validate.sh }] }
-  dev-rollback:
-    name: DEV rollback
-    needs: [deploy-dev, dev-validation]
-    if: always() && needs.dev-validation.result == 'failure'
-    steps: [{ run: ./rollback.sh }]
-  verify-prod: { name: Verify Ready to Implement, needs: dev-validation, steps: [{ run: ./check-ticket.sh }] }
-  verify-prod-dr: { name: Verify Ready to Implement, needs: dev-validation, steps: [{ run: ./check-ticket.sh }] }
-  deploy-prod: { name: PROD, needs: verify-prod, uses: ./.github/workflows/env.yml, with: { environment: prod } }
-  deploy-prod-dr: { name: PROD-DR, needs: verify-prod-dr, uses: ./.github/workflows/env.yml, with: { environment: prod-dr } }
-  prod-validation: { name: PROD validation, needs: deploy-prod, environment: prod, steps: [{ run: ./validate.sh }] }
-  prod-dr-validation: { name: PROD-DR validation, needs: deploy-prod-dr, environment: prod-dr, steps: [{ run: ./validate.sh }] }
+  dev-rollback: { name: DEV rollback, needs: [deploy-dev, dev-validation], if: "always() && needs.dev-validation.result == 'failure'", steps: [{ run: ./rollback.sh }] }
+  deploy-test: { name: TEST, needs: dev-validation, uses: ./.github/workflows/env.yml, with: { environment: test } }
+  test-validation: { name: TEST validation, needs: deploy-test, environment: test, steps: [{ run: ./validate.sh }] }
+  enter-change-number-test: { needs: test-validation, environment: test, steps: [{ run: ./enter-change.sh }] }
+  fetch-and-attach-change-number-test: { needs: enter-change-number-test, steps: [{ run: ./attach-change.sh }] }
+  deploy-stage: { name: STAGE, needs: fetch-and-attach-change-number-test, uses: ./.github/workflows/env.yml, with: { environment: stage } }
+  stage-validation: { name: STAGE validation, needs: [deploy-stage, fetch-and-attach-change-number-test], environment: stage, steps: [{ run: ./validate.sh }] }
+  start-prod-deployment: { name: Start PROD, needs: stage-validation, environment: { name: prod }, steps: [{ run: echo waiting }] }
+  start-prod-dr-deployment: { name: Start PROD-DR, needs: stage-validation, environment: { name: prod-dr }, steps: [{ run: echo waiting }] }
+  verify-ready-to-implement-prod: { name: Verify Ready to Implement, needs: [start-prod-deployment, fetch-and-attach-change-number-test], steps: [{ run: ./verify.sh }] }
+  verify-ready-to-implement-prod-dr: { name: Verify Ready to Implement, needs: [start-prod-dr-deployment, fetch-and-attach-change-number-test], steps: [{ run: ./verify.sh }] }
+  deploy-prod: { name: PROD, needs: [start-prod-deployment, verify-ready-to-implement-prod], uses: ./.github/workflows/env.yml, with: { environment: prod } }
+  deploy-prod-dr: { name: PROD-DR, needs: [start-prod-dr-deployment, verify-ready-to-implement-prod-dr], uses: ./.github/workflows/env.yml, with: { environment: prod-dr } }
 `);
-  const t = tree(CD, { "deploy-dev": envTree(), "deploy-prod": envTree(), "deploy-prod-dr": envTree() });
-  const jobs = () =>
-    ["DEV / Deploy", "DEV / Smoke test", "DEV validation", "DEV rollback", "Verify Ready to Implement", "Verify Ready to Implement", "PROD / Deploy", "PROD / Smoke test", "PROD validation", "PROD-DR / Deploy", "PROD-DR / Smoke test", "PROD-DR validation"].map(
-      (n) => job(n, n === "DEV rollback" ? "skipped" : "success"),
-    );
+  const t = tree(CD, { "deploy-dev": envTree(), "deploy-test": envTree(), "deploy-stage": envTree(), "deploy-prod": envTree(), "deploy-prod-dr": envTree() });
+  const names = (verify: [string, string]) => [
+    ["DEV / Deploy", "success"],
+    ["DEV / Smoke test", "success"],
+    ["DEV validation", "success"],
+    ["DEV rollback", "skipped"],
+    ["TEST / Deploy", "success"],
+    ["TEST / Smoke test", "success"],
+    ["TEST validation", "success"],
+    ["enter-change-number-test", "success"],
+    ["fetch-and-attach-change-number-test", "success"],
+    ["STAGE / Deploy", "success"],
+    ["STAGE / Smoke test", "success"],
+    ["STAGE validation", "success"],
+    ["Start PROD", "success"],
+    ["Start PROD-DR", "success"],
+    ["Verify Ready to Implement", verify[0]],
+    ["Verify Ready to Implement", verify[1]],
+    ["PROD", "skipped"],
+    ["PROD-DR", "skipped"],
+  ];
+  const jobs = (verify: [string, string] = ["skipped", "skipped"]) => names(verify).map(([n, c]) => job(n!, c!));
 
-  it("does not put a check that a PROD deployment needs into DEV; it is shown between the two, with the reason", () => {
-    // Two jobs share the display name, so the run's jobs cannot be told apart by name; the workflow file still
-    // defines each one, so both appear (declared-only) and are grouped by their own evidence.
-    const o = overviewOf(jobs(), t);
-    expect(phaseOf(o, "def:verify-prod")).toBe("Between dev and prod");
-    expect(phaseOf(o, "def:verify-prod-dr")).toBe("Between dev and prod-dr");
-    expect(o.phases.find((p) => p.name === "dev")!.nodeKeys).not.toContain("def:verify-prod");
-    expect(o.environments.get("def:verify-prod")).toMatchObject({ provenance: "unknown", reason: expect.stringContaining("the `prod` deployment needs it") });
+  it("same-name readiness checks with the same result are matched to their definitions and grouped with PROD and PROD-DR", () => {
+    const graph = buildHierarchyGraph(jobs(), t);
+    const verify = graph.nodes.filter((n) => n.label === "Verify Ready to Implement");
+    expect(verify.map((n) => [n.key, n.source, n.members.length, n.members[0]?.sameNameAs])).toEqual([
+      ["def:verify-ready-to-implement-prod", "workflow-file", 1, ["verify-ready-to-implement-prod-dr"]],
+      ["def:verify-ready-to-implement-prod-dr", "workflow-file", 1, ["verify-ready-to-implement-prod"]],
+    ]);
+    expect(graph.evidence.notes.join(" ")).toContain("2 jobs are named “Verify Ready to Implement” and had the same result (skipped)");
+    const o = buildOverview(graph, CD, { manifest: null }) as ReleaseOverview;
+    expect(phaseOf(o, "def:verify-ready-to-implement-prod")).toBe("prod");
+    expect(phaseOf(o, "def:verify-ready-to-implement-prod-dr")).toBe("prod-dr");
+    expect(o.environments.get("def:verify-ready-to-implement-prod")).toMatchObject({ provenance: "heuristic", reason: expect.stringContaining("“Start PROD”, which deploys to `prod`") });
   });
 
-  it("groups each environment's jobs together, with provenance, and keeps repeated calls apart", () => {
+  it("a change-record job after TEST that STAGE needs is grouped with TEST, labelled as inferred", () => {
     const o = overviewOf(jobs(), t);
-    expect(o.phases.map((p) => p.name)).toEqual(["dev", "Between dev and prod", "Between dev and prod-dr", "prod", "prod-dr"]);
-    const dev = o.phases.find((p) => p.name === "dev")!.nodeKeys.sort();
-    expect(dev).toEqual(["def:deploy-dev/deploy", "def:deploy-dev/smoke", "def:dev-rollback", "def:dev-validation"].sort());
-    expect(o.phases.find((p) => p.name === "prod")!.nodeKeys.sort()).toEqual(["def:deploy-prod/deploy", "def:deploy-prod/smoke", "def:prod-validation"].sort());
-    expect(o.phases.find((p) => p.name === "prod-dr")!.nodeKeys.sort()).toEqual(["def:deploy-prod-dr/deploy", "def:deploy-prod-dr/smoke", "def:prod-dr-validation"].sort());
-    expect(o.environments.get("def:deploy-prod/deploy")).toMatchObject({ environment: "prod", provenance: "input" });
-    expect(o.environments.get("def:prod-validation")).toMatchObject({ environment: "prod", provenance: "declared" });
-    expect(o.environments.get("def:deploy-prod/smoke")).toMatchObject({ environment: "prod", provenance: "input", reason: "“PROD” is called with `environment: prod`" });
+    expect(phaseOf(o, "def:fetch-and-attach-change-number-test")).toBe("test");
+    expect(o.environments.get("def:fetch-and-attach-change-number-test")).toEqual({
+      environment: "test",
+      provenance: "heuristic",
+      reason: "it declares no environment, and it runs after “enter-change-number-test”, which deploys to `test`, in the same workflow; the `stage` deployment needs it",
+    });
+    expect(o.phases.map((p) => p.name)).toEqual(["dev", "test", "stage", "prod", "prod-dr"]);
+    expect(o.phases.find((p) => p.name === "dev")!.nodeKeys.sort()).toEqual(["def:deploy-dev/deploy", "def:deploy-dev/smoke", "def:dev-rollback", "def:dev-validation"].sort());
+    expect(o.unassignedKeys).toEqual([]);
+  });
+
+  it("same-name jobs with different results are not guessed: they stay unmatched, in “Other jobs”, with the reason", () => {
+    const graph = buildHierarchyGraph(jobs(["success", "failure"]), t);
+    const byName = graph.nodes.filter((n) => n.source === "job-name" && n.label.includes("Verify Ready to Implement"));
+    expect(byName).toHaveLength(2);
+    expect(graph.evidence.notes.join(" ")).toContain("matched more than one job definition");
+    const o = buildOverview(graph, CD, { manifest: null }) as ReleaseOverview;
+    for (const n of byName) expect(o.unassignedKeys).toContain(n.key);
+  });
+
+  it("repeated calls of one workflow keep separate identities and environments", () => {
+    const o = overviewOf(jobs(), t);
+    // PROD and PROD-DR were skipped, so GitHub reports each call as one job: two nodes, one per call.
+    expect(o.environments.get("def:deploy-prod")).toMatchObject({ environment: "prod", provenance: "input" });
+    expect(o.environments.get("def:deploy-prod-dr")).toMatchObject({ environment: "prod-dr", provenance: "input" });
+    expect(o.environments.get("def:deploy-test/deploy")).toMatchObject({ environment: "test", provenance: "input" });
+    expect(o.environments.get("def:deploy-stage/smoke")).toMatchObject({ environment: "stage", provenance: "input", reason: "“STAGE” is called with `environment: stage`" });
     expect(o.environments.get("def:dev-rollback")).toMatchObject({ environment: "dev", provenance: "heuristic" });
   });
 });

@@ -142,11 +142,10 @@ describe("enterprise fixtures: release overview per variant", () => {
     expect(inferred.source).toBe("inferred");
     expect(inferred.sourceNote).toMatch(/inferred from `environment:`/);
     // The reusable CI call gets its own card; the remaining pre-deployment job stays in "Before deployment".
-    // Validation jobs declare no environment and the next environment's deployment needs them: with no phase file
-    // they could belong to either environment, so they are shown between the two instead of being guessed.
-    expect(inferred.phases.map((p) => p.name)).toEqual(["ci", "Before deployment", "dev", "Between dev and test", "test", "Between test and stage", "stage", "Between stage and prod", "prod"]);
-    expect(inferred.environments.get("def:smoke-dev")).toMatchObject({ provenance: "unknown" });
-    expect(inferred.nodePhase.get("def:smoke-dev")).toBe("between:dev>test");
+    expect(inferred.phases.map((p) => p.name)).toEqual(["ci", "Before deployment", "dev", "test", "stage", "prod"]);
+    // A smoke test declares no environment; it follows the dev deployment (and test's deployment needs it): dev, inferred.
+    expect(inferred.nodePhase.get("def:smoke-dev")).toBe("env:dev");
+    expect(inferred.environments.get("def:smoke-dev")).toMatchObject({ environment: "dev", provenance: "heuristic", reason: expect.stringContaining("the `test` deployment needs it") });
     // A rollback that nothing else needs stays with the deployment it follows, marked as a heuristic.
     expect(inferred.nodePhase.get("def:rollback-stage")).toBe("env:stage");
     expect(inferred.environments.get("def:rollback-stage")).toMatchObject({ environment: "stage", provenance: "heuristic" });

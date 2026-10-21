@@ -89,6 +89,8 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     if (!release) return undefined;
     const m = new Map<string, string>();
     for (const p of release.phases) for (const k of p.nodeKeys) m.set(k, p.name);
+    // Jobs in no phase are framed together and labelled, never drawn as if part of a neighbouring phase.
+    for (const k of release.unassignedKeys) m.set(k, "Other jobs");
     return m;
   }, [release]);
   const view: "overview" | "graph" = route.view === "graph" || (overview && !release) ? "graph" : "overview";

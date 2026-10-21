@@ -123,6 +123,18 @@ export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, o
           inside the called workflow are not shown.{node.callUnavailable ? ` ${node.callUnavailable}` : ""}
         </p>
       )}
+      {member?.sameNameAs && (
+        <p className="note" data-testid="same-name">
+          GitHub reported more than one job named “{member.job.name}”, with the same result, for this definition and{" "}
+          {member.sameNameAs.map((id, i) => (
+            <span key={id}>
+              {i ? ", " : ""}
+              <code>{id}</code>
+            </span>
+          ))}
+          . GitHub does not say which job ran which definition, so they are matched in order; both show the same result.
+        </p>
+      )}
       {node.declaredOnly && <p className="note">This job is declared in the workflow file, but there is no job with this name in the run.</p>}
       {member && node.kind !== "job" && <p className="note">This is “{member.label}” in {node.label}.</p>}
 

@@ -56,8 +56,12 @@ export function jobStatus(job: Pick<Job, "status" | "conclusion">): NodeStatus {
   }
 }
 
-/** `wholeCall`: GitHub reported the reusable-workflow call itself as one job (e.g. the call was skipped). */
-export type GraphMember = { label: string; job: Job; wholeCall?: boolean };
+/**
+ * `wholeCall`: GitHub reported the reusable-workflow call itself as one job (e.g. the call was skipped).
+ * `sameNameAs`: GitHub reported several jobs with this name and the same result, for as many job definitions with
+ * this display name; which job is which cannot be told from the API, so they were matched in order (see below).
+ */
+export type GraphMember = { label: string; job: Job; wholeCall?: boolean; sameNameAs?: string[] };
 
 /** Where the revision of a workflow file comes from. */
 export type RevisionSource = "run-commit" | "referenced-workflows" | "pinned-sha" | "caller-commit";
@@ -245,18 +249,43 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
   const assigned = new Map<string, GraphMember[]>(definition.jobs.map((d) => [d.id, []]));
   const unmatched: Job[] = [];
   let ambiguous = 0;
+  const twins = new Map<string, { job: Job; hits: { m: Matcher; match: RegExpExecArray }[] }[]>();
 
   for (const job of jobs) {
     const hits = matchers.map((m) => ({ m, match: m.regex.exec(job.name) })).filter((h): h is { m: Matcher; match: RegExpExecArray } => h.match !== null);
     const exact = hits.filter((h) => h.m.exact);
     const chosen = hits.length === 1 ? hits[0] : exact.length === 1 ? exact[0] : undefined;
     if (!chosen) {
-      if (hits.length > 1) ambiguous++;
-      unmatched.push(job);
+      if (hits.length > 1) {
+        const key = `${job.name}\u0000${hits.map((h) => h.m.def.id).sort().join("\u0000")}`;
+        (twins.get(key) ?? twins.set(key, []).get(key)!).push({ job, hits });
+      } else unmatched.push(job);
       continue;
     }
     const wholeCall = Boolean(chosen.m.def.uses) && chosen.match[2] === undefined;
     assigned.get(chosen.m.def.id)!.push({ label: chosen.m.memberLabel(chosen.match, job), job, ...(wholeCall ? { wholeCall } : {}) });
+  }
+
+  // Several definitions with the same display name (e.g. one check before PROD and one before PROD-DR): GitHub
+  // reports their jobs by that name only. When there is one job per definition and every job has the same result,
+  // any pairing shows the same thing, so they are matched in order and labelled as such. Otherwise they stay
+  // unmatched rather than guessed.
+  for (const group of twins.values()) {
+    const ids = group[0]!.hits.map((h) => h.m.def.id);
+    const same = group.every((g) => g.job.status === group[0]!.job.status && g.job.conclusion === group[0]!.job.conclusion);
+    const free = ids.every((id) => assigned.get(id)!.length === 0);
+    if (group.length !== ids.length || !same || !free || group.some((g) => g.hits.some((h) => h.m.def.matrix || h.m.def.uses))) {
+      ambiguous += group.length;
+      unmatched.push(...group.map((g) => g.job));
+      continue;
+    }
+    group.forEach((g, i) => {
+      const h = g.hits[i]!;
+      assigned.get(h.m.def.id)!.push({ label: h.m.memberLabel(h.match, g.job), job: g.job, sameNameAs: ids.filter((id) => id !== h.m.def.id) });
+    });
+    notes.push(
+      `${group.length} jobs are named “${group[0]!.job.name}” and had the same result (${group[0]!.job.conclusion ?? group[0]!.job.status}); GitHub does not say which definition (${ids.map((id) => `\`${id}\``).join(", ")}) each one ran, so they are matched in order. Give them distinct names to tell them apart.`,
+    );
   }
 
   const referenced = context.run?.referenced_workflows ?? [];
