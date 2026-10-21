@@ -29,7 +29,7 @@ describe("enterprise fixtures: structure", () => {
     const again = enterpriseRuns();
     expect(JSON.stringify(again.map((r) => [r.run, r.jobs]))).toBe(JSON.stringify(runs.map((r) => [r.run, r.jobs])));
     for (const r of runs) expect(String(r.run.display_title)).toMatch(/^\[synthetic\]/);
-    expect(gallery(runs).scenarios.map((s) => s.id)).toEqual(["reusable-ci", "multi-env-cd", "release", "approval-gates", "failure-rollback", "platform", "shared-cicd"]);
+    expect(gallery(runs).scenarios.map((s) => s.id)).toEqual(["reusable-ci", "multi-env-cd", "release", "approval-gates", "failure-rollback", "platform", "shared-cicd", "promotion-checks"]);
   });
 
   it("represent 10+ custom actions as steps inside jobs, never as jobs", () => {
@@ -142,7 +142,15 @@ describe("enterprise fixtures: release overview per variant", () => {
     expect(inferred.source).toBe("inferred");
     expect(inferred.sourceNote).toMatch(/inferred from `environment:`/);
     // The reusable CI call gets its own card; the remaining pre-deployment job stays in "Before deployment".
-    expect(inferred.phases.map((p) => p.name)).toEqual(["ci", "Before deployment", "dev", "test", "stage", "prod"]);
+    // Validation jobs declare no environment and the next environment's deployment needs them: with no phase file
+    // they could belong to either environment, so they are shown between the two instead of being guessed.
+    expect(inferred.phases.map((p) => p.name)).toEqual(["ci", "Before deployment", "dev", "Between dev and test", "test", "Between test and stage", "stage", "Between stage and prod", "prod"]);
+    expect(inferred.environments.get("def:smoke-dev")).toMatchObject({ provenance: "unknown" });
+    expect(inferred.nodePhase.get("def:smoke-dev")).toBe("between:dev>test");
+    // A rollback that nothing else needs stays with the deployment it follows, marked as a heuristic.
+    expect(inferred.nodePhase.get("def:rollback-stage")).toBe("env:stage");
+    expect(inferred.environments.get("def:rollback-stage")).toMatchObject({ environment: "stage", provenance: "heuristic" });
+    expect(inferred.environments.get("def:deploy-stage")).toMatchObject({ environment: "stage", provenance: "declared" });
     expect(inferred.roles.get("def:rollback-stage")).toEqual({ role: "recovery", evidence: "if: failure()" });
   });
 

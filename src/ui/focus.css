@@ -47,6 +47,22 @@
   color: var(--accent);
 }
 
+/* Grouped layout: one framed subgraph per group (e.g. environment). */
+.group-frame {
+  position: absolute;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  pointer-events: none;
+}
+.group-frame span {
+  position: absolute;
+  top: 5px;
+  left: 12px;
+  font: 700 13px var(--mono);
+  color: var(--accent);
+}
+
 /* Junctions for complete many-to-many dependencies. */
 .junction circle {
   fill: var(--surface);

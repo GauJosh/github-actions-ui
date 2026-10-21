@@ -5,8 +5,9 @@
 // - "declared": the repository's optional `.github/actions-ui-phases.yml` (a GitHub Actions UI convention;
 //   GitHub itself has no notion of release phases);
 // - "inferred": from `environment:` in the workflow files (including called workflows, and `${{ inputs.x }}`
-//   filled from a caller's literal input), only when every job can be placed unambiguously. Jobs before the first
-//   deployment are grouped by the top-level reusable-workflow call they belong to;
+//   filled from a caller's literal input). Other jobs join an environment only on evidence, recorded with its
+//   provenance (see inferredGrouping); jobs between two environments are shown between them, and jobs before the
+//   first deployment are grouped by the top-level reusable-workflow call they belong to;
 // - otherwise no overview is offered and the raw execution graph is used.
 // Phase-to-phase arrows are aggregated from real `needs` edges only. Nothing here invents dependencies.
 import { jobStatus, type GraphEdge, type GraphNode, type NodeStatus, type RunGraph } from "../graph/build";
@@ -162,6 +163,8 @@ export type ReleaseOverview = {
   gates: Map<string, GateState>;
   /** Declared job groups (e.g. services), by node key. Empty when none are declared. */
   nodeGroup: Map<string, string>;
+  /** Inferred grouping: each job's environment and its provenance (declared, input, heuristic, unknown). */
+  environments: Map<string, NodeEnvironment>;
   stop?: StopSummary;
   notes: string[];
 };
@@ -207,6 +210,8 @@ type Grouping = {
   nodeGroup: Map<string, string>;
   declaredRoles: Map<string, JobRole>;
   notes: string[];
+  /** Inferred grouping only: each job's environment, how it was established, and why. */
+  environments?: Map<string, NodeEnvironment>;
 };
 
 function declaredGrouping(graph: RunGraph, manifest: PhaseManifest): Grouping {
@@ -243,28 +248,103 @@ function declaredGrouping(graph: RunGraph, manifest: PhaseManifest): Grouping {
   };
 }
 
+/** How a job's environment (and so its phase) was established. */
+export type EnvProvenance = "declared" | "input" | "heuristic" | "unknown";
+export type NodeEnvironment = { environment?: string; provenance: EnvProvenance; reason: string };
+
+/** The reusable-workflow call instance a node belongs to ("" for the run's own workflow). */
+const instanceOf = (n: GraphNode) => (n.context?.path ?? []).join("/");
+const within = (inner: string, outer: string) => outer === "" || inner === outer || inner.startsWith(`${outer}/`);
+const callName = (n: GraphNode) => (n.context ? `“${n.context.labels.join(" › ")}”` : "the run's workflow");
+
+/**
+ * Inferred grouping. Evidence for a job's environment, strongest first:
+ *   1. declared: its own `environment:` (a literal, or `${{ inputs.x }}` filled from the caller's literal);
+ *   2. input: its reusable-workflow call passes a literal input whose value is one of the run's environments;
+ *   3. heuristic (same call): it is in the same call instance as jobs that all deploy to one environment;
+ *   4. heuristic (after a deployment): in the same workflow file, it runs after jobs deploying to exactly one
+ *      environment, and no deployment to another environment needs it.
+ * A job that runs after one environment and is needed by another environment's deployment (a promotion gate) is
+ * not assigned to either: it is shown between them. Jobs before any deployment are grouped by their top-level
+ * call, or as "Before deployment". Anything else is unassigned, with the reason.
+ */
 function inferredGrouping(graph: RunGraph): Grouping | null {
-  const envNodes = graph.nodes.filter((n) => n.environment && n.source === "workflow-file");
+  const fromFile = graph.nodes.filter((n) => n.source === "workflow-file");
+  const envNodes = fromFile.filter((n) => n.environment);
   if (envNodes.length === 0) return null;
   const layer = layerOf(graph);
-  const envs = [...new Set(envNodes.map((n) => n.environment!))].sort(
-    (a, b) => Math.min(...envNodes.filter((n) => n.environment === a).map((n) => layer.get(n.key)!)) - Math.min(...envNodes.filter((n) => n.environment === b).map((n) => layer.get(n.key)!)),
-  );
+  const firstLayer = (e: string) => Math.min(...envNodes.filter((n) => n.environment === e).map((n) => layer.get(n.key)!));
+  const envs = [...new Set(envNodes.map((n) => n.environment!))].sort((a, b) => firstLayer(a) - firstLayer(b));
+  const byName = new Map(envs.map((e) => [e.toLowerCase(), e]));
+  const nodes = new Map(graph.nodes.map((n) => [n.key, n]));
+  const environments = new Map<string, NodeEnvironment>();
+  const notes: string[] = [];
+
+  for (const n of envNodes) {
+    const e = n.environment!;
+    environments.set(n.key, {
+      environment: e,
+      provenance: n.environmentEvidence === "input" ? "input" : "declared",
+      reason:
+        n.environmentEvidence !== "input"
+          ? `\`environment: ${e}\` in its workflow file`
+          : n.callId
+            ? `the called workflow deploys only to \`${e}\``
+            : `its \`environment:\` is an input that ${callName(n)} fills with \`${e}\``,
+    });
+  }
+
+  // A job that deploys to an environment the run's data cannot resolve is never placed by a heuristic.
+  for (const n of fromFile) {
+    if (!environments.has(n.key) && n.environmentUnresolved)
+      environments.set(n.key, { provenance: "unknown", reason: `it deploys to \`${n.environmentUnresolved}\`, which cannot be resolved from the run's data` });
+  }
+
+  // 2. A literal input of the call naming one environment.
+  for (const n of fromFile) {
+    if (environments.has(n.key)) continue;
+    const inputs = { ...(n.context?.inputs ?? {}), ...(n.callInputs ?? {}) };
+    const named = Object.entries(inputs).filter(([, v]) => byName.has(v.trim().toLowerCase()));
+    const found = new Set(named.map(([, v]) => byName.get(v.trim().toLowerCase())!));
+    if (found.size === 1) {
+      const [k, v] = named[0]!;
+      const e = [...found][0]!;
+      environments.set(n.key, { environment: e, provenance: "input", reason: `${n.callInputs?.[k] !== undefined ? "the call" : callName(n)} is called with \`${k}: ${v}\`` });
+    } else if (found.size > 1) notes.push(`${n.label}: its call passes several environment names (${[...found].join(", ")}), so none is used.`);
+  }
+
+  // 3. The call instance it is in deploys to exactly one environment.
+  for (const n of fromFile) {
+    if (environments.has(n.key) || !n.context) continue;
+    const path = n.context.path;
+    for (let depth = path.length; depth > 0; depth--) {
+      const prefix = path.slice(0, depth).join("/");
+      const found = new Set(envNodes.filter((x) => x.context && within(instanceOf(x), prefix)).map((x) => x.environment!));
+      if (found.size === 0) continue;
+      if (found.size === 1) {
+        const e = [...found][0]!;
+        environments.set(n.key, {
+          environment: e,
+          provenance: "heuristic",
+          reason: `it declares no environment, and it is in the same reusable-workflow call (“${n.context.labels.slice(0, depth).join(" › ")}”) as the jobs that deploy to \`${e}\``,
+        });
+      }
+      break;
+    }
+  }
+
+  // 4. After deployments in the same workflow file; promotion gates; jobs before any deployment.
   const nodePhase = new Map<string, string>();
-  for (const n of envNodes) nodePhase.set(n.key, `env:${n.environment}`);
+  const between = new Map<string, { from: string; to: string }>();
   let pre = false;
   const calls = new Map<string, { label: string; layer: number }>();
-  for (const n of graph.nodes) {
-    if (nodePhase.has(n.key) || n.source !== "workflow-file") continue;
-    // Inside a call that passes a literal `environment` input naming a declared environment: that environment.
-    const input = n.context?.environmentInput;
-    if (input && envs.includes(input)) {
-      nodePhase.set(n.key, `env:${input}`);
-      continue;
-    }
-    const dist = ancestors(n.key, graph.edges);
-    const envAncestors = [...dist].filter(([k]) => envNodes.some((e) => e.key === k) || nodePhase.get(k)?.startsWith("env:"));
-    if (envAncestors.length === 0) {
+  const succs = (k: string) => graph.edges.filter((e) => e.from === k).map((e) => e.to);
+  const ordered = [...fromFile].sort((a, b) => layer.get(a.key)! - layer.get(b.key)!);
+  for (const n of ordered) {
+    if (environments.has(n.key)) continue;
+    const all = ancestors(n.key, graph.edges);
+    const deployedBefore = [...all.keys()].some((k) => environments.get(k)?.environment);
+    if (!deployedBefore) {
       const call = topLevelCall(n);
       if (call) {
         nodePhase.set(n.key, `call:${call.id}`);
@@ -274,24 +354,62 @@ function inferredGrouping(graph: RunGraph): Grouping | null {
         nodePhase.set(n.key, "pre");
         pre = true;
       }
+      environments.set(n.key, { provenance: "unknown", reason: "it runs before any deployment" });
       continue;
     }
-    const nearest = Math.min(...envAncestors.map(([, d]) => d));
-    const candidates = new Set(envAncestors.filter(([, d]) => d === nearest).map(([k]) => nodePhase.get(k)!).filter(Boolean));
-    if (candidates.size === 1) nodePhase.set(n.key, [...candidates][0]!);
+    const inst = instanceOf(n);
+    const local = [...all].filter(([k]) => within(instanceOf(nodes.get(k)!), inst) && environments.get(k)?.environment);
+    if (local.length === 0) {
+      environments.set(n.key, { provenance: "unknown", reason: `it declares no environment, and the deployments it follows are in other reusable-workflow calls than ${callName(n)}` });
+      continue;
+    }
+    const nearest = Math.min(...local.map(([, d]) => d));
+    const near = local.filter(([, d]) => d === nearest).map(([k]) => k);
+    const found = new Set(near.map((k) => environments.get(k)!.environment!));
+    if (found.size > 1) {
+      environments.set(n.key, { provenance: "unknown", reason: `it declares no environment, and it runs after deployments to ${[...found].map((e) => `\`${e}\``).join(" and ")}` });
+      continue;
+    }
+    const e = [...found][0]!;
+    const gated = [...new Set(succs(n.key).map((k) => environments.get(k)?.environment).filter((x): x is string => !!x && x !== e))].sort((a, b) => envs.indexOf(a) - envs.indexOf(b));
+    if (gated.length) {
+      between.set(n.key, { from: e, to: gated[0]! });
+      environments.set(n.key, {
+        provenance: "unknown",
+        reason: `it declares no environment; it runs after the \`${e}\` deployment and the \`${gated.join("`, `")}\` deployment needs it, so it could belong to either`,
+      });
+      continue;
+    }
+    const via = nodes.get(near[0]!)!.label;
+    environments.set(n.key, {
+      environment: e,
+      provenance: "heuristic",
+      reason: `it declares no environment, and it runs after “${via}”, which deploys to \`${e}\`, in the same workflow; no other environment's deployment needs it`,
+    });
   }
+
+  for (const [k, v] of environments) if (v.environment) nodePhase.set(k, `env:${v.environment}`);
+  for (const [k, b] of between) nodePhase.set(k, `between:${b.from}>${b.to}`);
+
+  const pairs = [...new Set([...between.values()].map((b) => `${b.from}>${b.to}`))];
+  const decls: Grouping["decls"] = [
+    ...[...calls].sort((a, b) => a[1].layer - b[1].layer).map(([id, c]) => ({ id: `call:${id}`, name: c.label, kind: "other" as const })),
+    ...(pre ? [{ id: "pre", name: "Before deployment", kind: "build" as const }] : []),
+  ];
+  for (const e of envs) {
+    decls.push({ id: `env:${e}`, name: e, kind: "deploy", environment: e });
+    for (const pair of pairs.filter((p) => p.startsWith(`${e}>`))) decls.push({ id: `between:${pair}`, name: `Between ${e} and ${pair.split(">")[1]}`, kind: "other" });
+  }
+  const heuristic = [...environments.values()].some((v) => v.provenance === "heuristic");
   return {
     source: "inferred",
-    note: `Phases inferred from \`environment:\` in the workflow file${graph.nodes.some((n) => n.context) ? "s, including called workflows" : ""}: each environment is a phase, and other jobs join the phase of their nearest upstream deployment${calls.size ? "; jobs before the first deployment are grouped by the reusable workflow call they belong to" : ""}. GitHub does not classify jobs into phases.`,
-    decls: [
-      ...[...calls].sort((a, b) => a[1].layer - b[1].layer).map(([id, c]) => ({ id: `call:${id}`, name: c.label, kind: "other" as const })),
-      ...(pre ? [{ id: "pre", name: "Before deployment", kind: "build" as const }] : []),
-      ...envs.map((e) => ({ id: `env:${e}`, name: e, kind: "deploy" as const, environment: e })),
-    ],
+    note: `Phases inferred from \`environment:\` in the workflow file${graph.nodes.some((n) => n.context) ? "s, including called workflows" : ""}: each environment is a phase. A job without its own environment joins one only on evidence: a literal input of its reusable-workflow call naming the environment${heuristic ? ", or (marked as inferred) the call it is in, or the deployment it follows in the same workflow when no other environment needs it" : ""}. A job between two environments is shown between them${calls.size ? "; jobs before the first deployment are grouped by the reusable workflow call they belong to" : ""}. GitHub does not classify jobs into phases.`,
+    decls,
     nodePhase,
     nodeGroup: new Map(),
     declaredRoles: new Map(),
-    notes: [],
+    notes,
+    environments,
   };
 }
 
@@ -478,6 +596,7 @@ export function buildOverview(
     unassignedKeys,
     nodePhase: grouping.nodePhase,
     nodeGroup: grouping.nodeGroup,
+    environments: grouping.environments ?? new Map(),
     roles,
     gates,
     stop,

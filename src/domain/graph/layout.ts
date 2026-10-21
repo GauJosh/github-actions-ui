@@ -14,7 +14,8 @@ export type LayoutEdge = { from: string; to: string };
 export type Box = { x: number; y: number; width: number; height: number; layer: number };
 export type LaidEdge = { from: string; to: string; path: string; junction?: string };
 export type Junction = { id: string; x: number; y: number; sources: string[]; targets: string[] };
-export type Band = { label: string; start: number; size: number };
+/** A lane or column band. `x`/`width`: a lane limited to one group (grouped layout). */
+export type Band = { label: string; start: number; size: number; x?: number; width?: number };
 export type Layout = {
   boxes: Map<string, Box>;
   edges: LaidEdge[];
@@ -25,7 +26,8 @@ export type Layout = {
   height: number;
   cyclic: boolean;
 };
-export type LayoutOptions = { bundle?: boolean };
+/** `vertical` (grouped layout): each group is a column, its jobs top to bottom in dependency order. */
+export type LayoutOptions = { bundle?: boolean; vertical?: boolean };
 
 export const NODE_WIDTH = 228;
 const GAP_X = 64;
@@ -327,4 +329,232 @@ export function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[], options: L
     height: contentBottom + PAD,
     cyclic,
   };
+}
+
+// ---- grouped (compound) layout ---------------------------------------------------------------------
+//
+// Each group (e.g. an environment) is laid out on its own, by the dependencies inside it, and drawn as one framed
+// subgraph. Groups are then placed left to right by the dependencies between them, so groups that do not depend
+// on each other (PROD and PROD-DR after the same gate) stand side by side vertically instead of in one long row.
+// Nodes without a group are placed the same way, without a frame. Edges are the same as in the plain layout.
+
+export type GroupFrame = { label: string; x: number; y: number; width: number; height: number };
+const FRAME_PAD = 14;
+const FRAME_HEADER = 26;
+const GROUP_GAP_X = 72;
+const GROUP_GAP_Y = 28;
+
+const NUMBER_PAIR = /(-?\d+(?:\.\d+)?(?:e-?\d+)?) (-?\d+(?:\.\d+)?(?:e-?\d+)?)/g;
+const shiftPath = (path: string, dx: number, dy: number) => path.replace(NUMBER_PAIR, (_, x: string, y: string) => `${Number(x) + dx} ${Number(y) + dy}`);
+
+/** Lays out nodes grouped by `column` (the group label). Falls back to the plain layout if groups depend on each other in a cycle. */
+export function layoutGrouped(nodes: LayoutNode[], edges: LayoutEdge[], options: LayoutOptions = {}): Layout & { groups: GroupFrame[] } {
+  const keys = new Set(nodes.map((n) => n.key));
+  const valid = edges.filter((e) => keys.has(e.from) && keys.has(e.to) && e.from !== e.to);
+  const groupOf = new Map(nodes.map((n) => [n.key, n.column ?? `\u0000${n.key}`]));
+  const order: string[] = [];
+  for (const n of nodes) if (!order.includes(groupOf.get(n.key)!)) order.push(groupOf.get(n.key)!);
+  const framed = (g: string) => !g.startsWith("\u0000");
+
+  // Dependencies between groups; a cycle means the grouping cannot be drawn as left-to-right subgraphs.
+  const gPreds = new Map(order.map((g) => [g, new Set<string>()]));
+  for (const e of valid) {
+    const a = groupOf.get(e.from)!;
+    const b = groupOf.get(e.to)!;
+    if (a !== b) gPreds.get(b)!.add(a);
+  }
+  const gLayer = new Map<string, number>();
+  const visiting = new Set<string>();
+  let cyclic = false;
+  const visit = (g: string): number => {
+    if (gLayer.has(g)) return gLayer.get(g)!;
+    if (visiting.has(g)) {
+      cyclic = true;
+      return 0;
+    }
+    visiting.add(g);
+    const l = Math.max(-1, ...[...gPreds.get(g)!].map(visit)) + 1;
+    visiting.delete(g);
+    gLayer.set(g, l);
+    return l;
+  };
+  order.forEach(visit);
+  if (cyclic) return { ...layoutGraph(nodes, edges, options), groups: [] };
+
+  // Each group on its own.
+  const inner = new Map<string, Layout>();
+  for (const g of order) {
+    const members = nodes.filter((n) => groupOf.get(n.key) === g).map((n) => ({ ...n, column: undefined, float: false }));
+    const set = new Set(members.map((m) => m.key));
+    const own = valid.filter((e) => set.has(e.from) && set.has(e.to));
+    // Declared swimlanes (e.g. services) keep the left-to-right layout inside their group.
+    const column = options.vertical && framed(g) && !members.some((m) => m.lane !== undefined);
+    inner.set(g, column ? layoutColumn(members, own) : layoutGraph(members, own, options));
+  }
+  const pad = (g: string) => (framed(g) ? FRAME_PAD : 0);
+  const sizeOf = (g: string) => {
+    const l = inner.get(g)!;
+    // The inner layout has its own outer padding; frames replace it.
+    const w = l.width - 2 * PAD + 2 * pad(g);
+    const h = l.height - 2 * PAD + 2 * pad(g) + (framed(g) ? FRAME_HEADER : 0);
+    return { w: Math.max(w, framed(g) ? 160 : 0), h };
+  };
+
+  // Columns of groups; within a column, groups ordered by where their prerequisites are, then appearance.
+  const columns: string[][] = [];
+  for (const g of order) (columns[gLayer.get(g)!] ??= []).push(g);
+  const placed = new Map<string, { x: number; y: number; w: number; h: number }>();
+  let x = PAD;
+  const colHeights = columns.map((col) => col.reduce((s, g) => s + sizeOf(g).h, 0) + GROUP_GAP_Y * Math.max(0, col.length - 1));
+  const tallest = Math.max(0, ...colHeights);
+  columns.forEach((col, ci) => {
+    const centre = (g: string) => {
+      const ps = [...gPreds.get(g)!].map((p) => placed.get(p)).filter((p): p is NonNullable<typeof p> => !!p);
+      return ps.length ? ps.reduce((s, p) => s + p.y + p.h / 2, 0) / ps.length : Infinity;
+    };
+    col.sort((a, b) => {
+      const ca = centre(a);
+      const cb = centre(b);
+      return ca === cb || (ca === Infinity && cb === Infinity) ? order.indexOf(a) - order.indexOf(b) : ca - cb;
+    });
+    let y = PAD + (tallest - colHeights[ci]!) / 2;
+    const width = Math.max(...col.map((g) => sizeOf(g).w));
+    for (const g of col) {
+      const s = sizeOf(g);
+      placed.set(g, { x: x + (width - s.w) / 2, y, w: s.w, h: s.h });
+      y += s.h + GROUP_GAP_Y;
+    }
+    x += width + GROUP_GAP_X;
+  });
+
+  // Translate each group's layout into place.
+  const boxes = new Map<string, Box>();
+  const laid: LaidEdge[] = [];
+  const junctions: Junction[] = [];
+  const lanes: Band[] = [];
+  const frames: GroupFrame[] = [];
+  order.forEach((g, gi) => {
+    const l = inner.get(g)!;
+    const p = placed.get(g)!;
+    const dx = p.x + pad(g) - PAD;
+    const dy = p.y + pad(g) + (framed(g) ? FRAME_HEADER : 0) - PAD;
+    const base = gLayer.get(g)! * 1000;
+    for (const [k, b] of l.boxes) boxes.set(k, { ...b, x: b.x + dx, y: b.y + dy, layer: base + b.layer });
+    const rename = (id: string) => `g${gi}-${id}`;
+    for (const j of l.junctions) junctions.push({ ...j, id: rename(j.id), x: j.x + dx, y: j.y + dy });
+    const end = (k: string) => (k.startsWith("junction:") ? `junction:${rename(k.slice("junction:".length))}` : k);
+    for (const e of l.edges) laid.push({ ...e, from: end(e.from), to: end(e.to), path: shiftPath(e.path, dx, dy), ...(e.junction ? { junction: rename(e.junction) } : {}) });
+    for (const band of l.lanes) lanes.push({ ...band, start: band.start + dy, x: p.x, width: p.w });
+    if (framed(g)) frames.push({ label: g, x: p.x, y: p.y, width: p.w, height: p.h });
+  });
+
+  // Edges between groups: from the right side of one job to the left side of the other. With bundling, jobs in one
+  // group that need exactly the same 2+ jobs elsewhere share a junction just before their group.
+  const crossPreds = new Map<string, string[]>();
+  for (const e of valid) if (groupOf.get(e.from) !== groupOf.get(e.to)) (crossPreds.get(e.to) ?? crossPreds.set(e.to, []).get(e.to)!).push(e.from);
+  const viaJunction = new Set<string>();
+  if (options.bundle) {
+    const bySig = new Map<string, string[]>();
+    for (const [t, ps] of crossPreds) {
+      const sources = [...new Set(ps)].sort();
+      if (sources.length < 2) continue;
+      const sig = `${groupOf.get(t)}|${sources.join("\u0000")}`;
+      (bySig.get(sig) ?? bySig.set(sig, []).get(sig)!).push(t);
+    }
+    for (const [sig, targets] of bySig) {
+      if (targets.length < 2) continue;
+      const sources = sig.split("|")[1]!.split("\u0000");
+      const frame = placed.get(groupOf.get(targets[0]!)!)!;
+      const centre = (k: string) => boxes.get(k)!.y + boxes.get(k)!.height / 2;
+      const ys = [...sources, ...targets].map(centre);
+      const id = `x${junctions.length + 1}`;
+      const j: Junction = { id, x: frame.x - GROUP_GAP_X / 2, y: ys.reduce((s, v) => s + v, 0) / ys.length, sources, targets };
+      junctions.push(j);
+      for (const s of sources) {
+        const a = boxes.get(s)!;
+        const [x1, y1] = [a.x + a.width, a.y + a.height / 2];
+        const d = Math.max(24, (j.x - x1) / 2);
+        laid.push({ from: s, to: `junction:${id}`, junction: id, path: `M ${x1} ${y1} C ${x1 + d} ${y1}, ${j.x - d} ${j.y}, ${j.x} ${j.y}` });
+        for (const t of targets) viaJunction.add(`${s}\u0000${t}`);
+      }
+      for (const t of targets) {
+        const b = boxes.get(t)!;
+        const [x2, y2] = [b.x, b.y + b.height / 2];
+        const d = Math.max(16, (x2 - j.x) / 2);
+        laid.push({ from: `junction:${id}`, to: t, junction: id, path: `M ${j.x} ${j.y} C ${j.x + d} ${j.y}, ${x2 - d} ${y2}, ${x2} ${y2}` });
+      }
+    }
+  }
+  for (const e of valid) {
+    if (groupOf.get(e.from) === groupOf.get(e.to) || viaJunction.has(`${e.from}\u0000${e.to}`)) continue;
+    const a = boxes.get(e.from)!;
+    const b = boxes.get(e.to)!;
+    const [x1, y1, x2, y2] = [a.x + a.width, a.y + a.height / 2, b.x, b.y + b.height / 2];
+    const d = Math.max(24, (x2 - x1) / 2);
+    laid.push({ from: e.from, to: e.to, path: `M ${x1} ${y1} C ${x1 + d} ${y1}, ${x2 - d} ${y2}, ${x2} ${y2}` });
+  }
+
+  const right = Math.max(PAD, ...[...placed.values()].map((p) => p.x + p.w));
+  const bottom = Math.max(PAD, ...[...placed.values()].map((p) => p.y + p.h));
+  return { boxes, edges: laid, junctions, lanes, columns: [], width: right + PAD, height: bottom + PAD, cyclic: false, groups: frames };
+}
+
+const ROW_GAP_X = 20;
+const ROW_GAP_Y = 44;
+
+/**
+ * Top-to-bottom layout for one group (a column, like a pipeline stage): jobs in dependency order from top to
+ * bottom, one row per dependency layer; jobs that can run in parallel share a row. Edges run from the bottom of a
+ * job to the top of the job that needs it.
+ */
+export function layoutColumn(nodes: LayoutNode[], edges: LayoutEdge[]): Layout {
+  const flat = layoutGraph(nodes, edges);
+  const keys = new Set(nodes.map((n) => n.key));
+  const valid = edges.filter((e) => keys.has(e.from) && keys.has(e.to) && e.from !== e.to);
+  const byKey = new Map(nodes.map((n) => [n.key, n]));
+  const rows: string[][] = [];
+  for (const n of nodes) (rows[flat.boxes.get(n.key)!.layer] ??= []).push(n.key);
+  const ordered = rows.filter(Boolean).map((r) => r.sort((a, b) => flat.boxes.get(a)!.y - flat.boxes.get(b)!.y));
+  const widthOf = (k: string) => byKey.get(k)!.width ?? NODE_WIDTH;
+  const rowWidth = (r: string[]) => r.reduce((s, k) => s + widthOf(k), 0) + ROW_GAP_X * Math.max(0, r.length - 1);
+  const inner = Math.max(0, ...ordered.map(rowWidth));
+  const boxes = new Map<string, Box>();
+  let y = PAD;
+  ordered.forEach((r, li) => {
+    const h = Math.max(...r.map((k) => byKey.get(k)!.height));
+    let x = PAD + (inner - rowWidth(r)) / 2;
+    for (const k of r) {
+      boxes.set(k, { x, y, width: widthOf(k), height: byKey.get(k)!.height, layer: li });
+      x += widthOf(k) + ROW_GAP_X;
+    }
+    y += h + ROW_GAP_Y;
+  });
+  // Ports spread along the bottom and top edges, ordered by the other end's position.
+  const outs = new Map<string, LayoutEdge[]>();
+  const ins = new Map<string, LayoutEdge[]>();
+  for (const e of valid) {
+    (outs.get(e.from) ?? outs.set(e.from, []).get(e.from)!).push(e);
+    (ins.get(e.to) ?? ins.set(e.to, []).get(e.to)!).push(e);
+  }
+  const cx = (k: string) => boxes.get(k)!.x + boxes.get(k)!.width / 2;
+  outs.forEach((l) => l.sort((p, q) => cx(p.to) - cx(q.to)));
+  ins.forEach((l) => l.sort((p, q) => cx(p.from) - cx(q.from)));
+  const port = (b: Box, i: number, n: number) => b.x + 16 + ((b.width - 32) * (i + 1)) / (n + 1);
+  const laid: LaidEdge[] = valid.map((e) => {
+    const a = boxes.get(e.from)!;
+    const b = boxes.get(e.to)!;
+    const x1 = port(a, outs.get(e.from)!.indexOf(e), outs.get(e.from)!.length);
+    const y1 = a.y + a.height;
+    const x2 = port(b, ins.get(e.to)!.indexOf(e), ins.get(e.to)!.length);
+    const y2 = b.y;
+    // An edge that skips rows bends out to the side of the column instead of crossing the jobs in between.
+    if (b.layer - a.layer > 1) {
+      const side = PAD + inner + 14;
+      return { from: e.from, to: e.to, path: `M ${x1} ${y1} C ${x1} ${y1 + 20}, ${side} ${y1 + 20}, ${side} ${y1 + 40} L ${side} ${y2 - 40} C ${side} ${y2 - 20}, ${x2} ${y2 - 20}, ${x2} ${y2}` };
+    }
+    const d = Math.max(14, (y2 - y1) / 2);
+    return { from: e.from, to: e.to, path: `M ${x1} ${y1} C ${x1} ${y1 + d}, ${x2} ${y2 - d}, ${x2} ${y2}` };
+  });
+  const skips = laid.some((e) => e.path.includes(" L "));
+  return { boxes, edges: laid, junctions: [], lanes: [], columns: [], width: PAD + inner + (skips ? 28 : 0) + PAD, height: y - ROW_GAP_Y + PAD, cyclic: flat.cyclic };
 }

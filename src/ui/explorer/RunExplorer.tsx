@@ -83,7 +83,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     return buildOverview(graph, def, { manifest: manifest.data?.manifest ?? null, gates });
   }, [graph, def, manifest.data, gateEvidence.data, releaseLoading]);
   const release = overview && !("unavailable" in overview) ? overview : null;
-  // The raw graph keeps every edge, structured by declared service groups (lanes) and phases (column bands).
+  // The raw graph keeps every edge, structured by declared service groups (lanes) and phases (one framed subgraph each).
   const rawLanes = useMemo(() => (release?.nodeGroup.size ? release.nodeGroup : undefined), [release]);
   const rawColumns = useMemo(() => {
     if (!release) return undefined;
@@ -224,7 +224,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
               <GraphCanvas
                 graph={graph}
                 lanes={rawLanes}
-                columns={rawColumns}
+                groups={rawColumns}
                 selectedKey={selectedNode?.key}
                 selectedJobId={selectedJob?.id}
                 onSelectNode={selectNode}
@@ -274,6 +274,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
               phaseName={phaseName}
               role={roleOf}
               gate={gateOf}
+              environment={release?.environments.get(selectedNode.key)}
               stepDefs={stepDefs}
               stepHref={selectedJob ? (n) => placeHref({ step: n }) : undefined}
               selectedStep={step}

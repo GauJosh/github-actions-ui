@@ -98,9 +98,9 @@ const REUSABLE_SECURITY: WorkflowSpec = {
   ],
 };
 
-type Env = "dev" | "test" | "stage" | "prod";
-const ENV_NAME: Record<Env, string> = { dev: "Dev", test: "Test", stage: "Stage", prod: "Prod" };
-const PROTECTED: Env[] = ["stage", "prod"];
+type Env = "dev" | "test" | "stage" | "prod" | "prod-dr";
+const ENV_NAME: Record<Env, string> = { dev: "Dev", test: "Test", stage: "Stage", prod: "Prod", "prod-dr": "Prod DR" };
+const PROTECTED: Env[] = ["stage", "prod", "prod-dr"];
 
 /** Deploy, validate and roll back one environment. `after` are the jobs this environment waits for. */
 function envJobs(env: Env, after: string[], opts: { services?: string[]; regions?: string[] } = {}): { jobs: JobDef[]; phase: PhaseSpec; exits: string[] } {
@@ -322,7 +322,60 @@ function scenarios(): ScenarioSpec[] {
         { id: "no-access", label: "No access to shared workflows", runId: 990007005, ago: 20, outcome: { approved: ["stage", "prod"] }, faults: { forbidden: true } },
       ],
     },
+    {
+      id: "promotion-checks",
+      title: "Promotion checks before PROD and PROD-DR (no phase file)",
+      description:
+        "After DEV, a readiness check runs before PROD and another before PROD-DR. Each check is a reusable workflow that receives its environment through an input not named `environment`, and declares no environment itself. PROD and PROD-DR deploy in parallel.",
+      main: {
+        path: ".github/workflows/app-promote.yml",
+        name: "[synthetic] App promotion via shared workflows",
+        on: "push",
+        jobs: [
+          { id: "ci", uses: `${SHARED_REPO}/.github/workflows/ci-build.yml@release/v2` },
+          { id: "cd", needs: ["ci"], uses: `${SHARED_REPO}/.github/workflows/cd-promote.yml@release/v2` },
+        ],
+      },
+      called: [SHARED_CI, promoteCd(), SHARED_ENV, SHARED_READY],
+      phases: [],
+      variants: [
+        { id: "released", label: "Released to PROD and PROD-DR", runId: 990008001, ago: 35, outcome: { approved: ["prod", "prod-dr"] } },
+        { id: "prod-dr-rolled-back", label: "PROD-DR validation failed · rolled back", runId: 990008002, ago: 25, outcome: { approved: ["prod", "prod-dr"], fail: { "cd / PROD-DR validation": "Validate release" } } },
+      ],
+    },
   ];
+}
+
+// The readiness check: no environment of its own; the environment arrives as `target`.
+const SHARED_READY: WorkflowSpec = {
+  repo: SHARED_REPO,
+  path: ".github/workflows/verify-ready.yml",
+  name: "[synthetic] Verify ready",
+  on: "workflow_call",
+  jobs: [{ id: "verify", name: "Verify Ready to Implement", steps: [{ name: "Check change record", uses: "acme-org/action-change-check@v1" }] }],
+};
+
+/** DEV, then a readiness check and a deployment (with validation and rollback) for PROD and, in parallel, PROD-DR. */
+function promoteCd(): WorkflowSpec {
+  const jobs: JobDef[] = [];
+  const envBlock = (env: Env, needs: string[]) => {
+    const label = env.toUpperCase();
+    jobs.push({ id: `deploy-${env}`, name: label, needs, uses: "./.github/workflows/deploy-environment.yml", with: { environment: env } });
+    jobs.push({ id: `${env}-validation`, name: `${label} validation`, needs: [`deploy-${env}`], environment: env, steps: [{ name: "Validate release", uses: "acme-org/action-validate@v1" }] });
+    jobs.push({
+      id: `${env}-rollback`,
+      name: `${label} rollback`,
+      needs: [`deploy-${env}`, `${env}-validation`],
+      if: `always() && (needs.deploy-${env}.result == 'failure' || needs.${env}-validation.result == 'failure')`,
+      steps: [{ name: "Roll back", uses: "acme-org/action-rollback@v1" }],
+    });
+  };
+  envBlock("dev", []);
+  for (const env of ["prod", "prod-dr"] as Env[]) {
+    jobs.push({ id: `ready-${env}`, name: `${env.toUpperCase()} readiness`, needs: ["dev-validation"], uses: "./.github/workflows/verify-ready.yml", with: { target: env } });
+    envBlock(env, [`ready-${env}`]);
+  }
+  return { repo: SHARED_REPO, path: ".github/workflows/cd-promote.yml", name: "[synthetic] Shared promotion CD", on: "workflow_call", jobs };
 }
 
 // Shared workflows (SYNTHETIC) in SHARED_REPO: generic names, no real organisation's topology.

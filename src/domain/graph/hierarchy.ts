@@ -136,6 +136,7 @@ function level(
       const env = fill(jd.environment, inputs);
       n.environment = env;
       n.environmentEvidence = env === undefined ? undefined : env === jd.environment ? "declared" : "input";
+      if (env === undefined) n.environmentUnresolved = jd.environment;
       if (env === undefined) notes.push(`${where ? `${where}: ` : ""}job \`${jd.id}\` deploys to \`${jd.environment}\`, which cannot be resolved from the run's data, so it is not used for grouping.`);
     }
     if (n.kind !== "reusable" || !jd?.uses) {
@@ -151,7 +152,8 @@ function level(
     const callPath = [...path, jd.id];
     const inner = original.members.filter((m) => !m.wholeCall);
     const whole = n.members.some((m) => m.wholeCall);
-    const childCtx: NodeContext = { path: callPath, labels: [...(ctx?.labels ?? []), n.label], files: [...(ctx?.files ?? []), child?.file], environmentInput: childInputs.environment };
+    if (Object.keys(childInputs).length) n.callInputs = childInputs;
+    const childCtx: NodeContext = { path: callPath, labels: [...(ctx?.labels ?? []), n.label], files: [...(ctx?.files ?? []), child?.file], environmentInput: childInputs.environment, inputs: childInputs };
     const envs = child ? environmentsOf(child, childInputs) : new Set<string>();
     const deploys = envs.size > 0 || childInputs.environment !== undefined;
     const canExpand = !jd.matrix && !whole && deploys && (inner.length > 0 || Boolean(child?.definition)) && depth < 20;
@@ -165,6 +167,8 @@ function level(
         n.environment = [...envs][0];
         n.environmentEvidence = "input";
       }
+      const unresolved = envs.size === 0 ? child?.definition?.jobs.find((j) => j.environment !== undefined && fill(j.environment, childInputs) === undefined)?.environment : undefined;
+      if (!n.environment && unresolved) n.environmentUnresolved = unresolved;
       if (child?.unavailable) notes.push(`${[...childCtx.labels].join(" › ")}: ${child.unavailable}`);
       nodes.push(n);
       collapsed++;

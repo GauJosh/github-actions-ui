@@ -9,7 +9,7 @@
 // - "All edges": every real edge drawn individually at full strength.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { durationMs, jobStatus as statusFor, type GraphNode, type RunGraph } from "../../domain/graph/build";
-import { layoutGraph, type LaidEdge, type Layout } from "../../domain/graph/layout";
+import { layoutGraph, layoutGrouped, type GroupFrame, type LaidEdge, type Layout } from "../../domain/graph/layout";
 import type { GateState, JobRole, RoleEvidence } from "../../domain/phases/phases";
 import type { Job } from "../../domain/types";
 import { formatDuration } from "../format";
@@ -125,9 +125,14 @@ type Props = {
   lanes?: Map<string, string>;
   /** Phase of each node (node key → name), labelled across the top when phases occupy separate columns. */
   columns?: Map<string, string>;
+  /**
+   * Group of each node (node key → name, e.g. its environment): each group is drawn as a framed subgraph laid out
+   * by its own dependencies. Nodes without a group are placed between the frames. Takes precedence over `columns`.
+   */
+  groups?: Map<string, string>;
 };
 
-export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, onSelectJob, annotations, label, fitContent, lanes, columns }: Props) {
+export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, onSelectJob, annotations, label, fitContent, lanes, columns, groups }: Props) {
   const viewport = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [view, setView] = useState<View>({ x: 0, y: 0, k: 1 });
@@ -136,22 +141,17 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
   const drag = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
 
   const callable = Boolean(annotations?.onOpenCall);
-  const layout = useMemo(
-    () =>
-      layoutGraph(
-        graph.nodes.map((n) => ({
-          key: n.key,
-          height: nodeHeight(n, { callable }),
-          width: n.external ? SUMMARY_WIDTH : undefined,
-          lane: lanes?.get(n.key),
-          column: columns?.get(n.key),
-          float: Boolean(n.external),
-        })),
-        graph.edges,
-        { bundle: !allEdges },
-      ),
-    [graph, callable, lanes, columns, allEdges],
-  );
+  const layout: Layout & { groups?: GroupFrame[] } = useMemo(() => {
+    const nodes = graph.nodes.map((n) => ({
+      key: n.key,
+      height: nodeHeight(n, { callable }),
+      width: n.external ? SUMMARY_WIDTH : undefined,
+      lane: lanes?.get(n.key),
+      column: groups ? groups.get(n.key) : columns?.get(n.key),
+      float: Boolean(n.external),
+    }));
+    return groups?.size ? layoutGrouped(nodes, graph.edges, { bundle: !allEdges, vertical: true }) : layoutGraph(nodes, graph.edges, { bundle: !allEdges });
+  }, [graph, callable, lanes, columns, groups, allEdges]);
 
   const ordered = useMemo(
     () =>
@@ -328,8 +328,13 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
               <span>{c.label}</span>
             </div>
           ))}
+          {layout.groups?.map((g) => (
+            <div key={g.label} className="group-frame" style={{ left: g.x, top: g.y, width: g.width, height: g.height }} data-testid="group-frame" data-group={g.label}>
+              <span>{g.label}</span>
+            </div>
+          ))}
           {layout.lanes.map((band) => (
-            <div key={band.label} className="lane-band" style={{ top: band.start, height: band.size, width: layout.width }} data-testid="lane-band">
+            <div key={`${band.label}@${band.x ?? 0}`} className="lane-band" style={{ top: band.start, height: band.size, left: band.x ?? 0, width: band.width ?? layout.width }} data-testid="lane-band">
               <span>{band.label}</span>
             </div>
           ))}

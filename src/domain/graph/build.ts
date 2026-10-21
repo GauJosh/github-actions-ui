@@ -73,6 +73,8 @@ export type NodeContext = {
   files: (WorkflowFileRef | undefined)[];
   /** A literal `environment` input passed by the innermost call (used only to match a declared environment). */
   environmentInput?: string;
+  /** The innermost call's `with:` values that resolve to literals (from the caller's own literals). */
+  inputs?: Record<string, string>;
 };
 
 export type GraphNode = {
@@ -107,6 +109,10 @@ export type GraphNode = {
   /** A reusable call: the called file and revision, or why it was not read. */
   callFile?: WorkflowFileRef;
   callUnavailable?: string;
+  /** A reusable call: its `with:` values that resolve to literals. */
+  callInputs?: Record<string, string>;
+  /** The job (or a job in the called workflow) declares an environment that cannot be resolved from the run's data. */
+  environmentUnresolved?: string;
   /** How `environment` was established: written in the file, or `${{ inputs.x }}` filled from the caller's literal `with:`. */
   environmentEvidence?: "declared" | "input";
   /** A stand-in for a node outside the current view (a phase detail shows its neighbours this way). */

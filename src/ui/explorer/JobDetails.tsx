@@ -3,7 +3,7 @@
 import { durationMs, jobStatus, type GraphEdge, type GraphNode, type RunGraph } from "../../domain/graph/build";
 import { REVISION_TEXT } from "../../domain/graph/hierarchy";
 import { defaultStepName, isCustomAction, type WorkflowStepDef } from "../../domain/graph/workflow-definition";
-import type { GateState, JobRole, RoleEvidence } from "../../domain/phases/phases";
+import type { EnvProvenance, GateState, JobRole, NodeEnvironment, RoleEvidence } from "../../domain/phases/phases";
 import { hasLogOutput } from "../../domain/steps/step-map";
 import type { Job } from "../../domain/types";
 import { absoluteTime, formatDuration, shortSha } from "../format";
@@ -23,6 +23,8 @@ type Props = {
   phaseName?: string;
   role?: { role: JobRole; evidence: RoleEvidence };
   gate?: GateState;
+  /** Inferred grouping: the job's environment, how it was established, and why. */
+  environment?: NodeEnvironment;
   /** The job's steps as written in the workflow file, to identify the actions each step runs. */
   stepDefs?: WorkflowStepDef[];
   /** Link that opens the log at a step's output, keeping the run, phase and view; and the step shown. */
@@ -38,13 +40,20 @@ const ROLE_LABEL: Record<JobRole, string> = {
   recovery: "Recovery (runs when an upstream job failed)",
   other: "Other",
 };
+const PROVENANCE_LABEL: Record<EnvProvenance, string> = {
+  declared: "declared in the workflow",
+  input: "from the caller's input",
+  heuristic: "inferred",
+  unknown: "unknown",
+};
+
 const EVIDENCE_LABEL: Record<RoleEvidence, string> = {
   declared: "declared in the repository's phase file",
   "if: failure()": "from its `if:` condition in the workflow file: it runs when an upstream job failed",
   environment: "from `environment:` in the workflow file",
 };
 
-export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, onSelectJob, phaseName, role, gate, stepDefs, stepHref, selectedStep }: Props) {
+export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, onSelectJob, phaseName, role, gate, environment, stepDefs, stepHref, selectedStep }: Props) {
   const label = new Map(graph.nodes.map((n) => [n.key, n]));
   const needs = graph.edges.filter((e) => e.to === node.key).map((e) => ({ node: label.get(e.from)!, edge: e }));
   const neededBy = graph.edges.filter((e) => e.from === node.key).map((e) => ({ node: label.get(e.to)!, edge: e }));
@@ -76,6 +85,13 @@ export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, o
               {gate.comment ? ` · “${gate.comment}”` : ""}
             </span>
           )}
+        </p>
+      )}
+      {environment && (environment.environment || environment.reason !== "it runs before any deployment") && (
+        <p className="note" data-testid="job-environment" data-provenance={environment.provenance}>
+          Environment:{" "}
+          {environment.environment ? <code>{environment.environment}</code> : <strong>not established</strong>} (<span className={`prov prov-${environment.provenance}`}>{PROVENANCE_LABEL[environment.provenance]}</span>):{" "}
+          {environment.reason}.
         </p>
       )}
       {node.context && (
