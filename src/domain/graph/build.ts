@@ -8,7 +8,7 @@
 // - jobs that cannot be matched to the workflow file are shown without edges.
 // Nothing here infers an edge from timing or order.
 import type { Job, Run } from "../types";
-import { runsOnFailure, type WorkflowDefinition, type WorkflowJobDef } from "./workflow-definition";
+import { runsOnFailure, type WorkflowDefinition, type WorkflowJobDef, type WorkflowStepDef } from "./workflow-definition";
 
 export type NodeStatus =
   | "failure"
@@ -56,7 +56,24 @@ export function jobStatus(job: Pick<Job, "status" | "conclusion">): NodeStatus {
   }
 }
 
-export type GraphMember = { label: string; job: Job };
+/** `wholeCall`: GitHub reported the reusable-workflow call itself as one job (e.g. the call was skipped). */
+export type GraphMember = { label: string; job: Job; wholeCall?: boolean };
+
+/** Where the revision of a workflow file comes from. */
+export type RevisionSource = "run-commit" | "referenced-workflows" | "pinned-sha" | "caller-commit";
+export type WorkflowFileRef = { repo: string; path: string; revision: string; source: RevisionSource };
+
+/** The chain of reusable-workflow calls a node sits in, from the run's own workflow down. */
+export type NodeContext = {
+  /** Call job ids, e.g. ["cd", "deploy-dev"]. */
+  path: string[];
+  /** Their display names, e.g. ["cd", "DEV"]. */
+  labels: string[];
+  /** The called workflow files, one per level, when they were read. */
+  files: (WorkflowFileRef | undefined)[];
+  /** A literal `environment` input passed by the innermost call (used only to match a declared environment). */
+  environmentInput?: string;
+};
 
 export type GraphNode = {
   key: string;
@@ -81,11 +98,23 @@ export type GraphNode = {
   environment?: string;
   /** From the workflow file: `if: failure()`, so the job runs only when something upstream failed. */
   onFailure?: boolean;
+  /** Inside reusable-workflow calls: which calls, and which files at which revisions. Absent at the top level. */
+  context?: NodeContext;
+  /** A job's steps as written in its workflow file. */
+  stepDefs?: WorkflowStepDef[];
+  /** A reusable call shown as one node: the id of its context (call ids joined by "/"), to open it. */
+  callId?: string;
+  /** A reusable call: the called file and revision, or why it was not read. */
+  callFile?: WorkflowFileRef;
+  callUnavailable?: string;
+  /** How `environment` was established: written in the file, or `${{ inputs.x }}` filled from the caller's literal `with:`. */
+  environmentEvidence?: "declared" | "input";
   /** A stand-in for a node outside the current view (a phase detail shows its neighbours this way). */
   external?: { key: string; phaseId?: string; phaseName: string; direction?: "upstream" | "downstream"; jobs?: string[] };
 };
 
-export type GraphEdge = { from: string; to: string };
+/** `via: "call"`: a caller-level `needs` between reusable calls, drawn between the jobs inside them. */
+export type GraphEdge = { from: string; to: string; via?: "call" };
 
 export type GraphEvidence =
   | { kind: "workflow-file"; path: string; revision: string; matchedJobs: number; totalJobs: number; notes: string[] }
@@ -110,12 +139,13 @@ function matcherFor(def: WorkflowJobDef): Matcher {
         .join(".+?")
     : escape(display);
   if (def.uses) {
-    // GitHub names reusable-workflow jobs "<caller> / <called job>", with matrix values after the caller.
+    // GitHub names reusable-workflow jobs "<caller> / <called job>", with matrix values after the caller. A
+    // call that did not run (e.g. skipped) is reported as one job named after the caller.
     return {
       def,
-      regex: new RegExp(`^${base}(?: \\((.+?)\\))? / (.+)$`),
+      regex: new RegExp(`^${base}(?: \\((.+?)\\))?(?: / (.+))?$`),
       exact: false,
-      memberLabel: (m) => (m[1] ? `${m[1]} / ${m[2]}` : m[2]!),
+      memberLabel: (m, job) => (m[2] ? (m[1] ? `${m[1]} / ${m[2]}` : m[2]) : job.name),
     };
   }
   if (def.matrix && !templated) {
@@ -219,7 +249,8 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
       unmatched.push(job);
       continue;
     }
-    assigned.get(chosen.m.def.id)!.push({ label: chosen.m.memberLabel(chosen.match, job), job });
+    const wholeCall = Boolean(chosen.m.def.uses) && chosen.match[2] === undefined;
+    assigned.get(chosen.m.def.id)!.push({ label: chosen.m.memberLabel(chosen.match, job), job, ...(wholeCall ? { wholeCall } : {}) });
   }
 
   const referenced = context.run?.referenced_workflows ?? [];
@@ -244,6 +275,7 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
       declaredOnly: members.length === 0,
       environment: def.environment,
       onFailure: runsOnFailure(def) || undefined,
+      stepDefs: def.uses ? undefined : def.steps,
     });
   });
 
@@ -286,7 +318,7 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
  * workflow file was read, the dependencies declared there. Without the file: jobs only, no edges.
  */
 export function calledWorkflowGraph(node: GraphNode, inner: WorkflowDefinition | null, context: GraphContext): RunGraph {
-  const jobs = node.members.map((m) => ({ ...m.job, name: m.label }));
+  const jobs = node.members.filter((m) => !m.wholeCall).map((m) => ({ ...m.job, name: m.label }));
   return buildRunGraph(jobs, inner, context);
 }
 

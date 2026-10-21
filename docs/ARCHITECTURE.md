@@ -450,7 +450,12 @@ Fixtures come from a **fetch script pinned to an immutable commit SHA**. Each do
   - declared in `.github/actions-ui-phases.yml` at the run's commit. This file is a convention of this app, not a GitHub feature, and the UI says so. Each phase may also declare `groups:` (labelled job lists), used only to draw lanes;
   - or inferred from jobs' `environment:`, labelled as inferred;
   - otherwise the plain execution graph is shown.
-- **Gates** come from the approvals and pending-deployments APIs, or from job status. `if: failure()` jobs are shown as recovery jobs.
+- **Gates** come from the approvals and pending-deployments APIs, or from job status. Jobs with `if: failure()` or a `needs.<job>.result == 'failure'` check are shown as recovery jobs.
+- **Nested reusable workflows** (`src/runs/workflow-tree.ts`, `src/domain/graph/hierarchy.ts`, in review):
+  - Called files are read at the revision the run used: the commit in `referenced_workflows`, a pinned SHA, or for `./` the commit of the workflow containing it. A branch or tag GitHub did not resolve is not read, and the UI says so.
+  - Bounds: 10 levels, 40 distinct files per run, 4 requests at a time; cycle detection; reading stops at a rate limit. Files at a commit are cached in memory for the session. No logs are fetched.
+  - Calls whose files declare environments (directly, or `${{ inputs.x }}` filled from a caller's literal `with:`) are expanded into their jobs; other calls stay one node. Edges inside a call come from its own `needs`; a caller-level `needs` is a separately marked edge.
+  - Without a phase file, the overview groups jobs by environment and puts jobs before the first deployment under their top-level call. With no environments anywhere, the run opens on the graph.
 - **Focused phase view.** It shows the phase's own jobs and the edges between them. Dependencies on other phases are drawn as one labelled summary per neighbouring phase and direction, connected only to the jobs that really have such a dependency. The view states that it is scoped; every individual edge stays available in the all-jobs graph.
 - **Layout** (`src/domain/graph/layout.ts`) is presentation only. It may bundle a set of jobs that all need the same set of jobs through a marked junction ("Show all edges" draws them individually), band by lane or phase, and shift nodes right. It never adds, removes or changes a dependency.
 - **Demo gallery.** Synthetic enterprise scenarios (`tools/fixture-server/enterprise.ts`) are generated in the fixture server, labelled `[synthetic]`, and compiled out of production builds like the rest of fixture mode (§11.2). They are not part of the pinned public fixture repository.

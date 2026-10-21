@@ -8,13 +8,15 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import type { Environment } from "../../app/environment";
 import { calledWorkflowGraph, durationMs, type GraphNode } from "../../domain/graph/build";
+import { treeAt } from "../../domain/graph/hierarchy";
 import { layoutGraph } from "../../domain/graph/layout";
 import { buildOverview, gatesFor, type ReleaseOverview as Overview } from "../../domain/phases/phases";
 import { routeToHash, type Route } from "../../domain/run-url";
 import type { Job, Run, RunRef } from "../../domain/types";
 import { GalleryStrip } from "../../fixture-mode/gallery";
-import { loadCalledWorkflow, loadGateEvidence, loadPhaseManifest } from "../../runs/release";
-import { graphFor, loadWorkflowDefinition } from "../../runs/workflow-graph";
+import { loadGateEvidence, loadPhaseManifest } from "../../runs/release";
+import { graphFor, loadWorkflowDefinition, rootFile } from "../../runs/workflow-graph";
+import { loadWorkflowTree } from "../../runs/workflow-tree";
 import { absoluteTime, firstLine, formatDuration, relativeTime, shortSha } from "../format";
 import { LogPanel } from "../LogPanel";
 import { ErrorState } from "../RepoDashboard";
@@ -45,7 +47,26 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     enabled: Boolean(def),
     staleTime: Infinity,
   });
-  const hasEnvironments = Boolean(def?.jobs.some((j) => j.environment));
+  // Called (reusable) workflows, recursively and bounded, at the revisions this run used. Files only: no logs.
+  const callsSomething = Boolean(def?.jobs.some((j) => j.uses));
+  const hierarchy = useQuery({
+    queryKey: ["workflow-tree", ...key, run.data?.head_sha, run.data?.path],
+    queryFn: () => {
+      const result = definition.data as Extract<NonNullable<typeof definition.data>, { definition: unknown }>;
+      return loadWorkflowTree(env.client, run.data!, { definition: result.definition, file: rootFile(ref, run.data!, result) });
+    },
+    enabled: callsSomething,
+    staleTime: Infinity,
+  });
+  const treePending = callsSomething && hierarchy.isPending;
+  const [nodeKey, setNodeKey] = useState<string | undefined>();
+
+  const graph = useMemo(() => {
+    if (!run.data || !jobs.data || definition.isPending || treePending) return null;
+    const result = definition.data ?? { unavailableReason: "The workflow file could not be loaded." };
+    return graphFor(ref, run.data, jobs.data, result, hierarchy.data);
+  }, [ref, run.data, jobs.data, definition.data, definition.isPending, treePending, hierarchy.data]);
+  const hasEnvironments = Boolean(graph?.nodes.some((n) => n.environment));
   const anyWaiting = Boolean(jobs.data?.some((j) => j.status === "waiting"));
   const gateEvidence = useQuery({
     queryKey: ["gates", ...key, anyWaiting],
@@ -53,13 +74,6 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     enabled: hasEnvironments && jobs.isSuccess,
     staleTime: 60_000,
   });
-  const [nodeKey, setNodeKey] = useState<string | undefined>();
-
-  const graph = useMemo(() => {
-    if (!run.data || !jobs.data || definition.isPending) return null;
-    const result = definition.data ?? { unavailableReason: "The workflow file could not be loaded." };
-    return graphFor(run.data, jobs.data, result);
-  }, [run.data, jobs.data, definition.data, definition.isPending]);
   const layout = useMemo(() => (graph ? layoutGraph(graph.nodes.map((n) => ({ key: n.key, height: nodeHeight(n) })), graph.edges) : null), [graph]);
 
   const releaseLoading = Boolean(def) && (manifest.isPending || (hasEnvironments && gateEvidence.isPending));
@@ -81,14 +95,8 @@ export function RunExplorer({ env, run: ref, route }: Props) {
 
   const selectedJob = jobs.data?.find((j) => j.id === jobId);
   const selectedNode = graph?.nodes.find((n) => (selectedJob ? n.members.some((m) => m.job.id === selectedJob.id) : n.key === nodeKey));
-  // A job inside a reusable call: its steps are defined in the called workflow (same cached request as the phase detail).
-  const resolved = selectedNode?.kind === "reusable" && selectedJob ? selectedNode.resolvedWorkflow : undefined;
-  const called = useQuery({
-    queryKey: ["called-workflow", env.mode, resolved?.path, resolved?.sha],
-    queryFn: () => loadCalledWorkflow(env.client, resolved!),
-    enabled: Boolean(resolved),
-    staleTime: Infinity,
-  });
+  // A job inside a call shown as one node: its steps are defined in the called workflow (from the loaded hierarchy).
+  const callTree = selectedNode?.kind === "reusable" && selectedNode.callId && hierarchy.data ? treeAt(hierarchy.data.tree, selectedNode.callId) : undefined;
   const phaseOfNode = (k?: string) => (k && release ? (release.nodePhase.get(k) ?? (release.unassignedKeys.includes(k) ? "other" : undefined)) : undefined);
   const activePhase = view === "overview" ? (route.phase ?? phaseOfNode(selectedNode?.key)) : undefined;
 
@@ -125,6 +133,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     void run.refetch();
     void jobs.refetch();
     void definition.refetch();
+    void hierarchy.refetch();
     void manifest.refetch();
     void gateEvidence.refetch();
   };
@@ -136,23 +145,20 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     ? "Loading jobs…"
     : definition.isPending
       ? `Reading the workflow file at ${shortSha(r.head_sha)}…`
-      : releaseLoading
+      : treePending
+        ? "Reading the called (reusable) workflows at the revisions this run used…"
+        : releaseLoading
         ? "Reading the release structure…"
         : null;
 
   const roleOf = selectedNode ? release?.roles.get(selectedNode.key) : undefined;
   const gateOf = selectedNode?.environment ? release?.gates.get(selectedNode.environment) : undefined;
-  const innerDefinition = called.data && "definition" in called.data ? called.data.definition : null;
+  const innerDefinition = callTree?.definition ?? null;
   const innerYamlId =
     selectedNode?.kind === "reusable" && innerDefinition && selectedJob
       ? calledWorkflowGraph(selectedNode, innerDefinition, { file: { path: "", revision: "" } }).nodes.find((n) => n.members.some((m) => m.job.id === selectedJob.id))?.yamlId
       : undefined;
-  const stepDefs =
-    selectedNode?.kind === "reusable"
-      ? innerDefinition?.jobs.find((j) => j.id === innerYamlId)?.steps
-      : selectedNode?.yamlId
-        ? def?.jobs.find((j) => j.id === selectedNode.yamlId)?.steps
-        : undefined;
+  const stepDefs = selectedNode?.kind === "reusable" ? innerDefinition?.jobs.find((j) => j.id === innerYamlId)?.steps : selectedNode?.stepDefs;
   const phaseName = release && selectedNode ? release.phases.find((p) => p.id === release.nodePhase.get(selectedNode.key))?.name : undefined;
   const sections = release
     ? [
@@ -240,7 +246,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
           selectedJobId={selectedJob?.id}
           onSelectNode={selectNode}
           onSelectJob={(job) => selectJob(job)}
-          onOpenCall={(node) => go({ phase: activePhase, call: node.yamlId, jobId: undefined })}
+          onOpenCall={(node) => go({ phase: activePhase, call: node.callId ?? node.yamlId, jobId: undefined })}
           onCloseCall={() => go({ phase: activePhase, call: undefined })}
         />
       )}

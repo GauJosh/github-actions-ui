@@ -248,3 +248,34 @@ test("live mode, a real runner log (fixture s16 served by the mocked API): the f
   expect(seen.filter((s) => s.method !== "OPTIONS").every((s) => s.method === "GET" || s.method === "HEAD")).toBe(true);
   expect(page.url()).not.toContain("token");
 });
+
+test("live mode, nested reusable workflow the token cannot read: explicit reason, no synthetic data, read-only", async ({ page }) => {
+  const seen = await mockGitHub(page);
+  const cors = { "access-control-allow-origin": ORIGIN, "access-control-expose-headers": "Content-Length" };
+  const shared = "c".repeat(40);
+  const caller = "jobs:\n  ci:\n    uses: org/shared/.github/workflows/ci.yml@main\n";
+  // Registered after mockGitHub, so these take precedence: the run reports the resolved commit; the file is forbidden.
+  await page.route("https://api.github.com/repos/acme/app/actions/runs/1", (route) =>
+    route.request().method() === "OPTIONS"
+      ? route.fallback()
+      : route.fulfill({
+          json: { id: 1, display_title: "CI on main", status: "completed", conclusion: "failure", run_attempt: 1, head_branch: "main", head_sha: "a".repeat(40), html_url: "https://github.com/acme/app/actions/runs/1", event: "push", path: ".github/workflows/ci.yml", referenced_workflows: [{ path: "org/shared/.github/workflows/ci.yml@main", sha: shared, ref: "refs/heads/main" }] },
+          headers: cors,
+        }),
+  );
+  await page.route("https://api.github.com/repos/acme/app/contents/.github/workflows/ci.yml*", (route) =>
+    route.request().method() === "OPTIONS" ? route.fallback() : route.fulfill({ json: { type: "file", encoding: "base64", content: Buffer.from(caller).toString("base64") }, headers: cors }),
+  );
+  await page.route("https://api.github.com/repos/org/shared/contents/**", (route) => {
+    seen.push({ method: route.request().method(), path: new URL(route.request().url()).pathname + new URL(route.request().url()).search });
+    return route.request().method() === "OPTIONS" ? route.fallback() : route.fulfill({ status: 403, json: { message: "Resource not accessible by personal access token" }, headers: cors });
+  });
+  await connectAndOpen(page);
+  await expect(page.getByTestId("graph-viewport")).toBeVisible();
+  await expect(page.getByText(/The token cannot read org\/shared\/\.github\/workflows\/ci\.yml/).first()).toBeVisible();
+  // The called file was requested at the commit GitHub reported, never at the branch name.
+  const sharedReads = seen.filter((s) => s.path.startsWith("/repos/org/shared/") && s.method !== "OPTIONS");
+  expect(sharedReads.map((s) => s.path)).toEqual([`/repos/org/shared/contents/.github/workflows/ci.yml?ref=${shared}`]);
+  expect(seen.filter((s) => s.method !== "OPTIONS").every((s) => s.method === "GET" || s.method === "HEAD")).toBe(true);
+  await expect(page.locator("body")).not.toContainText("[synthetic]");
+});

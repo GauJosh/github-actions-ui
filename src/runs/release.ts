@@ -3,10 +3,11 @@
 // - deployment approval history and pending deployments for the run;
 // - a called (reusable) workflow's file at the commit GitHub resolved it to.
 // Missing or unreadable evidence is reported, never replaced by guesses.
-import { readWorkflowDefinition, type WorkflowDefinition } from "../domain/graph/workflow-definition";
+import type { WorkflowDefinition } from "../domain/graph/workflow-definition";
 import { readPhaseManifest, type ApprovalRecord, type PendingDeployment, type PhaseManifest } from "../domain/phases/phases";
 import type { RepoRef, Run, RunRef } from "../domain/types";
 import { GitHubError, type GitHubClient } from "../github/client";
+import { readWorkflowAt } from "./workflow-tree";
 
 export const PHASE_FILE = ".github/actions-ui-phases.yml";
 
@@ -83,13 +84,7 @@ export async function loadCalledWorkflow(client: GitHubClient, resolved: { path:
   const m = /^([^/]+)\/([^/]+)\/(.+?)@.+$/.exec(resolved.path);
   if (!m) return { unavailableReason: "GitHub's reference to the called workflow could not be read." };
   const [, owner, repo, path] = m as unknown as [string, string, string, string];
-  try {
-    const text = await client.getWorkflowFile({ owner, repo }, path, resolved.sha);
-    const definition = readWorkflowDefinition(await parseYaml(text));
-    if ("error" in definition) return { unavailableReason: definition.error };
-    return { definition, file: { repo: `${owner}/${repo}`, path, revision: resolved.sha } };
-  } catch (error) {
-    if (error instanceof GitHubError) return { unavailableReason: `The called workflow ${owner}/${repo}/${path} could not be read with this token.` };
-    return { unavailableReason: "The called workflow could not be parsed." };
-  }
+  const read = await readWorkflowAt(client, { repo: `${owner}/${repo}`, path, revision: resolved.sha });
+  if ("unavailable" in read) return { unavailableReason: read.unavailable };
+  return { definition: read.definition, file: { repo: `${owner}/${repo}`, path, revision: resolved.sha } };
 }

@@ -111,3 +111,9 @@
   background: var(--surface-2);
   border-radius: 4px;
 }
+
+/* Caller-level `needs` between reusable-workflow calls */
+.edge.call {
+  /* dash-dot: distinct from the dashed lines into skipped jobs */
+  stroke-dasharray: 12 3 2 3;
+}

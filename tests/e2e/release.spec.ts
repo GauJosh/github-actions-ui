@@ -9,7 +9,7 @@ test("gallery: pick a scenario variant, see which is selected, switch variants, 
   const github = await forbidGitHub(page);
   await page.goto("/?mode=fixtures");
   const gallery = page.getByTestId("demo-gallery");
-  await expect(gallery.locator("article")).toHaveCount(6);
+  await expect(gallery.locator("article")).toHaveCount(7);
   await gallery.getByTestId("variant-release-prod-waiting").click();
 
   const strip = page.getByTestId("gallery-strip");

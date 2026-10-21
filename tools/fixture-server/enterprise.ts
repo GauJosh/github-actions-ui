@@ -19,8 +19,25 @@ const durationOf = (name: string) => 25 + (parseInt(hash(name).slice(0, 6), 16) 
 // ---- workflow model --------------------------------------------------------------------------------
 
 type StepDef = { name?: string; uses?: string; run?: string };
-type JobDef = { id: string; needs?: string[]; environment?: string; if?: string; uses?: string; matrix?: { key: string; values: string[] }; steps?: StepDef[] };
-type WorkflowSpec = { path: string; name: string; on: string; jobs: JobDef[] };
+type JobDef = {
+  id: string;
+  /** Display name (GitHub uses it in job names, e.g. "cd / DEV / Deploy"). */
+  name?: string;
+  needs?: string[];
+  /** A literal name, or `${{ inputs.environment }}` filled from the caller's `with:`. */
+  environment?: string;
+  if?: string;
+  uses?: string;
+  with?: Record<string, string>;
+  matrix?: { key: string; values: string[] };
+  steps?: StepDef[];
+};
+/** `repo`: where the file lives (default: the enterprise repository); shared workflows live in SHARED_REPO. */
+type WorkflowSpec = { repo?: string; path: string; name: string; on: string; jobs: JobDef[] };
+const ENTERPRISE_FULL = `${ENTERPRISE_OWNER}/${ENTERPRISE_REPO}`;
+/** SYNTHETIC repository holding shared reusable workflows (served only through the Contents API). */
+export const SHARED_REPO = `${ENTERPRISE_OWNER}/shared-workflows`;
+const repoOf = (w: WorkflowSpec) => w.repo ?? ENTERPRISE_FULL;
 type PhaseSpec = { id: string; name: string; kind: string; environment?: string; jobs: Record<string, string>; groups?: Record<string, string[]> };
 
 const checkout: StepDef = { uses: "actions/checkout@v4" };
@@ -31,11 +48,13 @@ function workflowYaml(w: WorkflowSpec): string {
   const jobs: Record<string, unknown> = {};
   for (const j of w.jobs) {
     const body: Record<string, unknown> = {};
+    if (j.name) body.name = j.name;
     if (j.needs?.length) body.needs = j.needs.length === 1 ? j.needs[0] : j.needs;
     if (j.if) body.if = j.if;
     if (j.environment) body.environment = j.environment;
     if (j.uses) {
       body.uses = j.uses;
+      if (j.with) body.with = j.with;
       body.secrets = "inherit";
     } else {
       body["runs-on"] = "ubuntu-latest";
@@ -164,7 +183,9 @@ type Outcome = {
   approved?: Env[];
   rejected?: Env[];
 };
-type VariantSpec = { id: string; label: string; runId: number; ago: number; outcome: Outcome; event?: string; branch?: string };
+/** Missing evidence to exercise the app's fallbacks: a reference GitHub did not resolve, a missing file, no access. */
+type Faults = { unreferenced?: string[]; missing?: string[]; forbidden?: boolean };
+type VariantSpec = { id: string; label: string; runId: number; ago: number; outcome: Outcome; event?: string; branch?: string; faults?: Faults };
 type ScenarioSpec = { id: string; title: string; description: string; main: WorkflowSpec; called: WorkflowSpec[]; phases: PhaseSpec[]; variants: VariantSpec[] };
 
 const ciCaller = (): { jobs: JobDef[]; phase: PhaseSpec } => ({
@@ -277,47 +298,180 @@ function scenarios(): ScenarioSpec[] {
         { id: "prod-rolling-out", label: "Rolling out to Prod", runId: 990006003, ago: 4, outcome: { approved: allApproved, running: ["deploy-api-prod (us-east)", "deploy-web-prod (ap-south)"] } },
       ],
     },
+    {
+      id: "shared-cicd",
+      title: "Shared CI/CD workflows (no phase file)",
+      description:
+        "The app's workflow only calls a shared CI workflow and a shared CD workflow in another repository, pinned to a branch. The CD workflow calls a nested environment workflow once per environment. No phase file and no environments in the caller.",
+      main: {
+        path: ".github/workflows/app-release.yml",
+        name: "[synthetic] App release via shared workflows",
+        on: "push",
+        jobs: [
+          { id: "ci", uses: `${SHARED_REPO}/.github/workflows/ci-build.yml@release/v2` },
+          { id: "cd", needs: ["ci"], if: "${{ needs.ci.outputs.track != 'hotfix' }}", uses: `${SHARED_REPO}/.github/workflows/cd-deploy.yml@release/v2`, with: { image_tag: "${{ needs.ci.outputs.image_tag }}" } },
+        ],
+      },
+      called: [SHARED_CI, sharedCd(), SHARED_ENV],
+      phases: [],
+      variants: [
+        { id: "released", label: "Released", runId: 990007001, ago: 70, outcome: { approved: ["stage", "prod"] } },
+        { id: "cd-policy-failed", label: "CD policy failed in DEV", runId: 990007002, ago: 50, outcome: { fail: { "cd / DEV / Deploy": "Run CD policy" } } },
+        { id: "revision-unresolved", label: "CD revision not reported", runId: 990007003, ago: 40, outcome: { approved: ["stage", "prod"] }, faults: { unreferenced: ["cd-deploy.yml"] } },
+        { id: "nested-file-missing", label: "Nested workflow missing", runId: 990007004, ago: 30, outcome: { approved: ["stage", "prod"] }, faults: { missing: [".github/workflows/deploy-environment.yml"] } },
+        { id: "no-access", label: "No access to shared workflows", runId: 990007005, ago: 20, outcome: { approved: ["stage", "prod"] }, faults: { forbidden: true } },
+      ],
+    },
   ];
+}
+
+// Shared workflows (SYNTHETIC) in SHARED_REPO: generic names, no real organisation's topology.
+const SHARED_CI: WorkflowSpec = {
+  repo: SHARED_REPO,
+  path: ".github/workflows/ci-build.yml",
+  name: "[synthetic] Shared CI",
+  on: "workflow_call",
+  jobs: [
+    {
+      id: "build",
+      name: "Build & test",
+      steps: [
+        checkout,
+        { name: "Install tools", uses: "acme-org/action-setup-tools@v1" },
+        { name: "Secrets login", uses: "acme-org/action-secrets-login@v1" },
+        { name: "Fetch build secrets", uses: "acme-org/action-secrets-fetch@v1" },
+        { name: "Unit tests", run: "./gradlew test" },
+        { name: "Static analysis", uses: "acme-org/action-code-scan@v2" },
+        { name: "Build image", uses: "acme-org/action-image-build@v3" },
+        { name: "Sign image", uses: "acme-org/action-sign@v1" },
+      ],
+    },
+    { id: "scan", name: "Image scan", needs: ["build"], steps: [{ name: "Scan image", uses: "acme-org/action-image-scan@v2" }] },
+  ],
+};
+
+const SHARED_ENV: WorkflowSpec = {
+  repo: SHARED_REPO,
+  path: ".github/workflows/deploy-environment.yml",
+  name: "[synthetic] Deploy one environment",
+  on: "workflow_call",
+  jobs: [
+    {
+      id: "deploy",
+      name: "Deploy",
+      environment: "${{ inputs.environment }}",
+      steps: [
+        checkout,
+        { name: "Run CD policy", uses: "acme-org/action-cd-policy@v1" },
+        { name: "Render manifests", uses: "./.github/actions/render-manifests" },
+        { name: "Open GitOps change", uses: "acme-org/action-gitops-pr@v2" },
+        { name: "Wait for sync", run: "./scripts/wait-for-sync.sh" },
+      ],
+    },
+    { id: "smoke", name: "Smoke test", needs: ["deploy"], steps: [{ name: "Smoke tests", uses: "acme-org/action-smoke@v1" }] },
+  ],
+};
+
+/** Deploy (nested call), validate and roll back each environment in turn. */
+function sharedCd(): WorkflowSpec {
+  const jobs: JobDef[] = [];
+  let previous: string[] = [];
+  for (const env of ["dev", "test", "stage", "prod"] as Env[]) {
+    const label = env.toUpperCase();
+    jobs.push({ id: `deploy-${env}`, name: label, needs: previous, uses: "./.github/workflows/deploy-environment.yml", with: { environment: env } });
+    jobs.push({ id: `${env}-validation`, name: `${label} validation`, needs: [`deploy-${env}`], environment: env, steps: [{ name: "Validate release", uses: "acme-org/action-validate@v1" }] });
+    jobs.push({
+      id: `${env}-rollback`,
+      name: `${label} rollback`,
+      needs: [`deploy-${env}`, `${env}-validation`],
+      if: `always() && (needs.deploy-${env}.result == 'failure' || needs.${env}-validation.result == 'failure')`,
+      steps: [{ name: "Roll back", uses: "acme-org/action-rollback@v1" }],
+    });
+    previous = [`${env}-validation`];
+  }
+  return { repo: SHARED_REPO, path: ".github/workflows/cd-deploy.yml", name: "[synthetic] Shared CD", on: "workflow_call", jobs };
 }
 
 // ---- simulation -------------------------------------------------------------------------------------
 
-type Instance = { apiName: string; def: JobDef; needs: string[] };
+/**
+ * One job as GitHub would report it, or (`call: true`) a reusable-workflow call, which GitHub reports as a job only
+ * when it does not run. `byId`: needed job ids in the same workflow → their API names. `calls`: enclosing calls.
+ */
+type Instance = { apiName: string; def: JobDef; needs: string[]; env?: string; byId: Record<string, string[]>; call?: boolean; calls: string[] };
+
+const fillInput = (v: string | undefined, inputs: Record<string, string>) => (v?.startsWith("${{") ? inputs[/inputs\.([\w-]+)/.exec(v)?.[1] ?? ""] : v);
+
+/** Finds the called workflow for `uses:`: `./path` in the caller's repository, or `owner/repo/path@ref`. */
+function calledSpec(caller: WorkflowSpec, uses: string, called: WorkflowSpec[]): WorkflowSpec {
+  const local = uses.startsWith("./");
+  const repo = local ? repoOf(caller) : uses.split("/").slice(0, 2).join("/");
+  const path = local ? uses.slice(2) : uses.split("/").slice(2).join("/").split("@")[0]!;
+  return called.find((w) => repoOf(w) === repo && w.path === path)!;
+}
 
 function expand(main: WorkflowSpec, called: WorkflowSpec[]): Instance[] {
-  const byPath = new Map(called.map((w) => [`./${w.path}`, w]));
-  const names = new Map<string, string[]>(); // job id (top level) -> API names of all its jobs
   const out: Instance[] = [];
   const legs = (base: string, def: JobDef) => (def.matrix ? def.matrix.values.map((v) => `${base} (${v})`) : [base]);
-  for (const job of main.jobs) {
-    const deps = (job.needs ?? []).flatMap((n) => names.get(n) ?? []);
-    if (job.uses) {
-      const inner = byPath.get(job.uses)!;
-      const innerNames = new Map<string, string[]>();
-      for (const ij of inner.jobs) {
-        const innerDeps = ij.needs?.length ? ij.needs.flatMap((n) => innerNames.get(n) ?? []) : deps;
-        const api = legs(`${job.id} / ${ij.id}`, ij);
-        innerNames.set(ij.id, api);
-        for (const a of api) out.push({ apiName: a, def: ij, needs: innerDeps });
+  // Returns job id -> API names of all its jobs. Entry jobs of a call wait for what the call waits for.
+  const walk = (spec: WorkflowSpec, prefix: string, entry: string[], inputs: Record<string, string>, calls: string[]): Map<string, string[]> => {
+    const names = new Map<string, string[]>();
+    for (const job of spec.jobs) {
+      const deps = job.needs?.length ? job.needs.flatMap((n) => names.get(n) ?? []) : entry;
+      const byId = Object.fromEntries((job.needs ?? []).map((n) => [n, names.get(n) ?? []]));
+      const display = `${prefix}${job.name ?? job.id}`;
+      if (job.uses) {
+        out.push({ apiName: display, def: job, needs: deps, byId, call: true, calls });
+        const withs = Object.fromEntries(Object.entries(job.with ?? {}).map(([k, v]) => [k, fillInput(v, inputs) ?? v]));
+        const inner = walk(calledSpec(spec, job.uses, called), `${display} / `, deps, withs, [...calls, display]);
+        names.set(job.id, [...inner.values()].flat());
+      } else {
+        const api = legs(display, job);
+        names.set(job.id, api);
+        for (const a of api) out.push({ apiName: a, def: job, needs: deps, env: fillInput(job.environment, inputs), byId, calls });
       }
-      names.set(job.id, [...innerNames.values()].flat());
-    } else {
-      const api = legs(job.id, job);
-      names.set(job.id, api);
-      for (const a of api) out.push({ apiName: a, def: job, needs: deps });
     }
-  }
+    return names;
+  };
+  walk(main, "", [], {}, []);
   return out;
 }
 
-type JobState = { status: string; conclusion: string | null; start?: number; end?: number; failStep?: string; runningStep?: boolean; absent?: boolean; failedUpstream?: boolean };
+/** Every reusable workflow the run references, as GitHub lists them in `referenced_workflows`. */
+function references(main: WorkflowSpec, called: WorkflowSpec[], shaOf: (repo: string) => string): { path: string; sha: string; ref: string }[] {
+  const out = new Map<string, { path: string; sha: string; ref: string }>();
+  const walk = (spec: WorkflowSpec) => {
+    for (const job of spec.jobs) {
+      if (!job.uses) continue;
+      const target = calledSpec(spec, job.uses, called);
+      const sha = shaOf(repoOf(target));
+      const ref = job.uses.startsWith("./") ? sha : job.uses.split("@")[1]!;
+      out.set(`${repoOf(target)}/${target.path}@${ref}`, { path: `${repoOf(target)}/${target.path}@${ref}`, sha, ref: job.uses.startsWith("./") ? sha : `refs/heads/${ref}` });
+      walk(target);
+    }
+  };
+  walk(main);
+  return [...out.values()];
+}
+
+/** `hidden`: inside a call that did not run, so GitHub reports only the call, not this job. */
+type JobState = { status: string; conclusion: string | null; start?: number; end?: number; failStep?: string; runningStep?: boolean; absent?: boolean; failedUpstream?: boolean; hidden?: boolean };
 
 function simulate(instances: Instance[], outcome: Outcome): Map<string, JobState> {
   const state = new Map<string, JobState>();
   for (const inst of instances) {
+    const enclosing = inst.calls.map((c) => state.get(c)!);
+    if (enclosing.some((c) => c.absent)) {
+      state.set(inst.apiName, { status: "pending", conclusion: null, absent: true });
+      continue;
+    }
+    if (enclosing.some((c) => c.conclusion === "skipped")) {
+      state.set(inst.apiName, { status: "completed", conclusion: "skipped", hidden: true });
+      continue;
+    }
     const deps = inst.needs.map((n) => state.get(n)!);
     const cond = inst.def.if ?? "success()";
-    const env = inst.def.environment as Env | undefined;
+    const env = (inst.env ?? inst.def.environment) as Env | undefined;
     if (deps.some((d) => d.absent || d.status !== "completed")) {
       state.set(inst.apiName, { status: "pending", conclusion: null, absent: true });
       continue;
@@ -326,14 +480,23 @@ function simulate(instances: Instance[], outcome: Outcome): Map<string, JobState
     const failedUpstream = directFailed || deps.some((d) => d.failedUpstream);
     const allOk = deps.every((d) => d.conclusion === "success");
     // failure(): any upstream job failed; the rollback guard additionally needs a direct need to have failed.
-    const runs = cond.includes("failure()")
-      ? failedUpstream && (!cond.includes("contains(needs.*.result, 'failure')") || directFailed)
-      : cond.includes("always()")
-        ? true
-        : allOk;
+    // `needs.<id>.result == 'failure'`: one of those needed jobs (or calls) failed.
+    const resultChecks = [...cond.matchAll(/needs\.([\w-]+)\.result == 'failure'/g)].map((m) => m[1]!);
+    const runs = resultChecks.length
+      ? resultChecks.some((id) => (inst.byId[id] ?? []).some((n) => state.get(n)?.conclusion === "failure"))
+      : cond.includes("failure()")
+        ? failedUpstream && (!cond.includes("contains(needs.*.result, 'failure')") || directFailed)
+        : cond.includes("always()")
+          ? true
+          : allOk;
     const ready = Math.max(0, ...deps.map((d) => d.end ?? 0)) + 6;
     if (!runs) {
       state.set(inst.apiName, { status: "completed", conclusion: "skipped", start: ready, end: ready, failedUpstream });
+      continue;
+    }
+    if (inst.call) {
+      // A call that runs is not a job of its own; its jobs report the work.
+      state.set(inst.apiName, { status: "completed", conclusion: "success", failedUpstream });
       continue;
     }
     if (env && outcome.waiting?.includes(env)) {
@@ -363,6 +526,8 @@ export type EnterpriseRun = {
   run: Record<string, unknown> & { id: number; status: string; conclusion: string | null; head_branch: string; event: string; workflow_id: number; path: string; head_sha: string; created_at: string };
   jobs: Record<string, unknown>[];
   files: Map<string, string>;
+  /** Files of other (synthetic) repositories, by "owner/repo@sha", then path; a value with a status is an API error. */
+  external: Map<string, Map<string, string | { status: number; message: string }>>;
   logs: Map<number, string>;
   approvals: unknown[];
   pending: unknown[];
@@ -375,9 +540,32 @@ function buildRun(s: ScenarioSpec, v: VariantSpec, workflowId: number): Enterpri
   const headSha = hash(`${s.id}/${v.id}`);
   const jobs: Record<string, unknown>[] = [];
   const logs = new Map<number, string>();
-  instances.forEach((inst, i) => {
+  instances
+    .filter((inst) => inst.call && state.get(inst.apiName)!.conclusion === "skipped" && !state.get(inst.apiName)!.hidden)
+    .forEach((inst, k) => {
+      // GitHub reports a call that did not run as one job named after the call.
+      const at = iso(base + (state.get(inst.apiName)!.start ?? 0));
+      jobs.push({
+        id: v.runId * 1000 + 900 + k,
+        run_id: v.runId,
+        name: inst.apiName,
+        workflow_name: s.main.name,
+        head_sha: hash(`${s.id}/${v.id}`),
+        status: "completed",
+        conclusion: "skipped",
+        created_at: at,
+        started_at: at,
+        completed_at: at,
+        html_url: `${HTML}/actions/runs/${v.runId}/job/${v.runId * 1000 + 900 + k}`,
+        run_attempt: 1,
+        runner_name: null,
+        labels: [],
+        steps: [],
+      });
+    });
+  instances.filter((inst) => !inst.call).forEach((inst, i) => {
     const st = state.get(inst.apiName)!;
-    if (st.absent) return; // not created yet: its upstream is still running or waiting
+    if (st.absent || st.hidden) return; // not created yet (upstream still running or waiting), or inside a skipped call
     const id = v.runId * 1000 + i + 1;
     const started = st.start !== undefined && st.status !== "waiting" ? iso(base + st.start) : null;
     const completed = st.end !== undefined ? iso(base + st.end) : null;
@@ -478,8 +666,23 @@ function buildRun(s: ScenarioSpec, v: VariantSpec, workflowId: number): Enterpri
   const conclusion = inFlight ? null : live.some((st) => st.conclusion === "failure") ? "failure" : "success";
   const ends = live.map((st) => st.end).filter((e): e is number => e !== undefined);
   const files = new Map<string, string>([[s.main.path, workflowYaml(s.main)]]);
-  for (const w of s.called) files.set(w.path, workflowYaml(w));
-  files.set(
+  for (const w of s.called) if (repoOf(w) === ENTERPRISE_FULL) files.set(w.path, workflowYaml(w));
+  // Shared workflows live in another (synthetic) repository, at their own commit. A variant with faults gets its
+  // own commit there, so a file at one commit never changes.
+  const faults = v.faults ?? {};
+  const sharedSha = hash(`shared/${s.id}/${v.faults ? v.id : "base"}`);
+  const external = new Map<string, Map<string, string | { status: number; message: string }>>();
+  const shared = s.called.filter((w) => repoOf(w) === SHARED_REPO);
+  if (shared.length) {
+    const atSha = new Map<string, string | { status: number; message: string }>();
+    for (const w of shared) {
+      if (faults.forbidden) atSha.set(w.path, { status: 403, message: "Resource not accessible by personal access token" });
+      else if (!faults.missing?.includes(w.path)) atSha.set(w.path, workflowYaml(w));
+    }
+    external.set(`${SHARED_REPO}@${sharedSha}`, atSha);
+  }
+  const referenced = references(s.main, s.called, (repo) => (repo === SHARED_REPO ? sharedSha : headSha)).filter((r) => !faults.unreferenced?.some((p) => r.path.includes(p)));
+  if (s.phases.length) files.set(
     ".github/actions-ui-phases.yml",
     `# [synthetic] Release phases for GitHub Actions UI (a convention of this app, not a GitHub feature).\n${stringify(
       {
@@ -527,11 +730,12 @@ function buildRun(s: ScenarioSpec, v: VariantSpec, workflowId: number): Enterpri
       actor: { login: "synthetic-user" },
       triggering_actor: { login: "synthetic-user" },
       pull_requests: (v.event ?? s.main.on) === "pull_request" ? [{ number: 1200 + (v.runId % 100) }] : [],
-      referenced_workflows: s.called.map((w) => ({ path: `${ENTERPRISE_OWNER}/${ENTERPRISE_REPO}/${w.path}@${headSha}`, sha: headSha, ref: "refs/heads/main" })),
+      referenced_workflows: referenced,
       html_url: `${HTML}/actions/runs/${v.runId}`,
     },
     jobs,
     files,
+    external,
     logs,
     approvals,
     pending,

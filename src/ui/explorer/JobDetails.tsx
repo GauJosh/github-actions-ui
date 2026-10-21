@@ -1,6 +1,7 @@
 // Details for the selected job: context in the graph, timing, steps, and the route into its log.
 // A failed step is named only when GitHub's step data says so; otherwise the job is described as failed.
-import { durationMs, jobStatus, type GraphNode, type RunGraph } from "../../domain/graph/build";
+import { durationMs, jobStatus, type GraphEdge, type GraphNode, type RunGraph } from "../../domain/graph/build";
+import { REVISION_TEXT } from "../../domain/graph/hierarchy";
 import { defaultStepName, isCustomAction, type WorkflowStepDef } from "../../domain/graph/workflow-definition";
 import type { GateState, JobRole, RoleEvidence } from "../../domain/phases/phases";
 import { hasLogOutput } from "../../domain/steps/step-map";
@@ -39,14 +40,14 @@ const ROLE_LABEL: Record<JobRole, string> = {
 };
 const EVIDENCE_LABEL: Record<RoleEvidence, string> = {
   declared: "declared in the repository's phase file",
-  "if: failure()": "from `if: failure()` in the workflow file",
+  "if: failure()": "from its `if:` condition in the workflow file: it runs when an upstream job failed",
   environment: "from `environment:` in the workflow file",
 };
 
 export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, onSelectJob, phaseName, role, gate, stepDefs, stepHref, selectedStep }: Props) {
   const label = new Map(graph.nodes.map((n) => [n.key, n]));
-  const needs = graph.edges.filter((e) => e.to === node.key).map((e) => label.get(e.from)!);
-  const neededBy = graph.edges.filter((e) => e.from === node.key).map((e) => label.get(e.to)!);
+  const needs = graph.edges.filter((e) => e.to === node.key).map((e) => ({ node: label.get(e.from)!, edge: e }));
+  const neededBy = graph.edges.filter((e) => e.from === node.key).map((e) => ({ node: label.get(e.to)!, edge: e }));
   const member = job ? node.members.find((m) => m.job.id === job.id) : undefined;
 
   return (
@@ -77,10 +78,33 @@ export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, o
           )}
         </p>
       )}
+      {node.context && (
+        <p className="note" data-testid="job-workflow-context">
+          Inside <strong>{node.context.labels.join(" › ")}</strong>
+          {(() => {
+            const file = node.context.files.at(-1);
+            return file ? (
+              <>
+                {" "}
+                · defined in <code>{`${file.repo}/${file.path}`}</code> at {shortSha(file.revision)} ({REVISION_TEXT[file.source]}).
+              </>
+            ) : (
+              ". Its workflow file was not read, so its steps and dependencies are not known."
+            );
+          })()}
+          {node.environment && node.environmentEvidence === "input" && (
+            <>
+              {" "}
+              Environment <code>{node.environment}</code>: the file's <code>environment:</code> is an input, filled with the calling job's literal value.
+            </>
+          )}
+        </p>
+      )}
       {node.kind === "reusable" && node.uses && (
-        <p className="note">
+        <p className="note" data-testid="call-origin">
           Calls <code>{node.uses}</code>
-          {node.resolvedWorkflow ? ` (resolved by GitHub to ${shortSha(node.resolvedWorkflow.sha)})` : ""}. Dependencies inside the called workflow are not shown.
+          {node.callFile ? ` (read at ${shortSha(node.callFile.revision)}: ${REVISION_TEXT[node.callFile.source]})` : node.resolvedWorkflow ? ` (resolved by GitHub to ${shortSha(node.resolvedWorkflow.sha)})` : ""}. Dependencies
+          inside the called workflow are not shown.{node.callUnavailable ? ` ${node.callUnavailable}` : ""}
         </p>
       )}
       {node.declaredOnly && <p className="note">This job is declared in the workflow file, but there is no job with this name in the run.</p>}
@@ -88,9 +112,9 @@ export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, o
 
       <dl className="facts">
         <dt>Needs</dt>
-        <dd>{needs.length ? needs.map((n) => <DepChip key={n.key} node={n} />) : graph.evidence.kind === "workflow-file" ? "nothing (a starting job)" : "unknown (no workflow file)"}</dd>
+        <dd>{needs.length ? needs.map((d) => <DepChip key={d.node.key} node={d.node} edge={d.edge} />) : graph.evidence.kind === "workflow-file" ? "nothing (a starting job)" : "unknown (no workflow file)"}</dd>
         <dt>Needed by</dt>
-        <dd>{neededBy.length ? neededBy.map((n) => <DepChip key={n.key} node={n} />) : graph.evidence.kind === "workflow-file" ? "no later jobs" : "unknown (no workflow file)"}</dd>
+        <dd>{neededBy.length ? neededBy.map((d) => <DepChip key={d.node.key} node={d.node} edge={d.edge} />) : graph.evidence.kind === "workflow-file" ? "no later jobs" : "unknown (no workflow file)"}</dd>
         {job && <Timing job={job} />}
       </dl>
 
@@ -129,10 +153,13 @@ export function JobDetails({ graph, node, job, logOpen, onOpenLog, onCloseLog, o
   );
 }
 
-function DepChip({ node }: { node: GraphNode }) {
+function DepChip({ node, edge }: { node: GraphNode; edge?: GraphEdge }) {
+  const caller = edge?.via === "call";
   return (
-    <span className={`dep s-${node.status}`}>
+    <span className={`dep s-${node.status}${caller ? " caller-level" : ""}`} title={caller ? "A caller-level needs between reusable-workflow calls, not a needs inside a workflow" : undefined}>
       <StatusIcon status={node.status} /> {node.label}
+      {node.context && <span className="muted"> ({node.context.labels.join(" › ")})</span>}
+      {caller && <span className="muted"> · caller-level</span>}
     </span>
   );
 }

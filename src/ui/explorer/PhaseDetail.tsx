@@ -35,7 +35,7 @@ export function PhaseDetail({ env, graph, overview, phaseId, call, selectedJobId
   }, [sub, overview]);
   const ownJobs = sub.nodes.filter((n) => !n.external).reduce((c, n) => c + Math.max(1, n.members.length), 0);
   const annotations: NodeAnnotations = { roles: overview.roles, gates: overview.gates, onOpenCall };
-  const callNode = call ? sub.nodes.find((n) => n.yamlId === call && n.kind === "reusable" && !n.external) : undefined;
+  const callNode = call ? sub.nodes.find((n) => (n.callId ?? n.yamlId) === call && n.kind === "reusable" && !n.external) : undefined;
   const selectedKey = sub.nodes.find((n) => !n.external && n.members.some((m) => m.job.id === selectedJobId))?.key;
   const name = phase?.name ?? "Other jobs";
   const needs = overview.phaseEdges.filter((e) => e.to === phaseId).map((e) => overview.phases.find((p) => p.id === e.from)?.name);

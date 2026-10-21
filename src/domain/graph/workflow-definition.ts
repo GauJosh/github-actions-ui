@@ -16,6 +16,8 @@ export type WorkflowJobDef = {
   ifCondition?: string;
   /** `environment:` (a name, or `{ name }`): the job deploys to a protected environment. */
   environment?: string;
+  /** `with:` on a reusable-workflow call: inputs passed to the called workflow, as text (scalars only). */
+  with?: Record<string, string>;
   steps: WorkflowStepDef[];
 };
 
@@ -51,15 +53,25 @@ export function readWorkflowDefinition(doc: unknown): WorkflowDefinition | { err
       hasIf: raw.if !== undefined,
       ifCondition: typeof raw.if === "string" ? raw.if : typeof raw.if === "boolean" ? String(raw.if) : undefined,
       environment,
+      with: isRecord(raw.with)
+        ? Object.fromEntries(
+            Object.entries(raw.with)
+              .filter(([, v]) => ["string", "number", "boolean"].includes(typeof v))
+              .map(([k, v]) => [k, String(v)]),
+          )
+        : undefined,
       steps,
     });
   }
   return { name: str(doc.name), jobs, problems };
 }
 
-/** A job that runs only when something upstream failed: `if: failure()` (possibly within a larger expression). */
+/**
+ * A job that runs when something upstream failed: `if: failure()`, or a check that a needed job's result is
+ * `'failure'` (e.g. `always() && needs.validate.result == 'failure'`), possibly within a larger expression.
+ */
 export function runsOnFailure(def: WorkflowJobDef): boolean {
-  return !!def.ifCondition && /\bfailure\(\)/.test(def.ifCondition);
+  return !!def.ifCondition && /\bfailure\(\)|\bneeds\.[\w-]+\.result\s*==\s*['"]failure['"]/.test(def.ifCondition);
 }
 
 /** The display name GitHub gives a step that has no `name:`. */

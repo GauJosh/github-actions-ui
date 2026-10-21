@@ -73,6 +73,12 @@ export function countsText(node: GraphNode): string {
 }
 
 export function kindText(node: GraphNode, graph: RunGraph): string | null {
+  const own = ownKindText(node, graph);
+  const where = node.context ? `in ${node.context.labels.join(" › ")}` : null;
+  return [where, own].filter(Boolean).join(" · ") || null;
+}
+
+function ownKindText(node: GraphNode, graph: RunGraph): string | null {
   if (node.kind === "matrix") return `matrix · ${node.members.length} jobs${node.source === "job-name" ? " (grouped by name)" : ""}`;
   if (node.kind === "reusable") return node.source === "job-name" ? "reusable workflow? (grouped by name)" : `calls ${node.uses}`;
   if (node.source === "job-name" && graph.evidence.kind === "workflow-file") return "not matched to the workflow file";
@@ -255,6 +261,13 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
     }
   }
   const statusOf = new Map(graph.nodes.map((n) => [n.key, n.status]));
+  // Caller-level `needs` between reusable calls (dashed); a junction line is one when all its pairs are.
+  const callPairs = new Set(graph.edges.filter((e) => e.via === "call").map((e) => `${e.from}->${e.to}`));
+  const isCallEdge = (e: LaidEdge) => {
+    const j = e.junction ? junctions.get(e.junction) : undefined;
+    if (!j) return callPairs.has(`${e.from}->${e.to}`);
+    return j.sources.every((s) => j.targets.every((t) => callPairs.has(`${s}->${t}`)));
+  };
   const large = graph.nodes.length > 12 && (layout.width > size.w * 1.3 || layout.height > size.h * 1.3);
   const maxHeight = expanded ? undefined : fitContent ? Math.min(620, Math.max(180, layout.height + 24)) : undefined;
 
@@ -329,7 +342,13 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
             {layout.edges.map((e) => {
               const target = statusOf.get(e.to);
               const hl = edgeRelated(e);
-              const cls = ["edge", hl ? "hl" : selectedKey && !allEdges ? "faded" : "", target === "skipped" || target === "not_run" ? "muted" : "", e.junction ? "bundled" : ""].join(" ");
+              const cls = [
+                "edge",
+                hl ? "hl" : selectedKey && !allEdges ? "faded" : "",
+                target === "skipped" || target === "not_run" ? "muted" : "",
+                e.junction ? "bundled" : "",
+                isCallEdge(e) ? "call" : "",
+              ].join(" ");
               return (
                 <path
                   key={`${e.from}->${e.to}`}

@@ -29,7 +29,7 @@ describe("enterprise fixtures: structure", () => {
     const again = enterpriseRuns();
     expect(JSON.stringify(again.map((r) => [r.run, r.jobs]))).toBe(JSON.stringify(runs.map((r) => [r.run, r.jobs])));
     for (const r of runs) expect(String(r.run.display_title)).toMatch(/^\[synthetic\]/);
-    expect(gallery(runs).scenarios.map((s) => s.id)).toEqual(["reusable-ci", "multi-env-cd", "release", "approval-gates", "failure-rollback", "platform"]);
+    expect(gallery(runs).scenarios.map((s) => s.id)).toEqual(["reusable-ci", "multi-env-cd", "release", "approval-gates", "failure-rollback", "platform", "shared-cicd"]);
   });
 
   it("represent 10+ custom actions as steps inside jobs, never as jobs", () => {
@@ -141,7 +141,8 @@ describe("enterprise fixtures: release overview per variant", () => {
     const inferred = buildOverview(graph, def, { manifest: null }) as ReleaseOverview;
     expect(inferred.source).toBe("inferred");
     expect(inferred.sourceNote).toMatch(/inferred from `environment:`/);
-    expect(inferred.phases.map((p) => p.name)).toEqual(["Before deployment", "dev", "test", "stage", "prod"]);
+    // The reusable CI call gets its own card; the remaining pre-deployment job stays in "Before deployment".
+    expect(inferred.phases.map((p) => p.name)).toEqual(["ci", "Before deployment", "dev", "test", "stage", "prod"]);
     expect(inferred.roles.get("def:rollback-stage")).toEqual({ role: "recovery", evidence: "if: failure()" });
   });
 

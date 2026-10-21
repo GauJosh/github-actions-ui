@@ -1,9 +1,11 @@
 // Loads the evidence for a run's graph: the workflow file at the run's own commit, parsed on demand.
 // The YAML parser is loaded lazily, only when a run's graph is opened.
-import { buildRunGraph, type RunGraph } from "../domain/graph/build";
+import { buildRunGraph, type RunGraph, type WorkflowFileRef } from "../domain/graph/build";
+import { buildHierarchyGraph, type WorkflowTree } from "../domain/graph/hierarchy";
 import { readWorkflowDefinition, type WorkflowDefinition } from "../domain/graph/workflow-definition";
 import type { Job, RepoRef, Run } from "../domain/types";
 import { GitHubError, type GitHubClient } from "../github/client";
+import { TREE_LIMITS, type TreeStats } from "./workflow-tree";
 
 export type DefinitionResult = { definition: WorkflowDefinition; file: { path: string; revision: string } } | { unavailableReason: string };
 
@@ -40,11 +42,24 @@ export async function loadWorkflowDefinition(client: GitHubClient, repo: RepoRef
   return { definition, file: { path: run.path, revision: run.head_sha } };
 }
 
-export function graphFor(run: Run, jobs: Job[], result: DefinitionResult): RunGraph {
-  const graph =
-    "definition" in result
-      ? buildRunGraph(jobs, result.definition, { run, file: result.file })
-      : buildRunGraph(jobs, null, { run, unavailableReason: result.unavailableReason });
+/** The run's own workflow file, as the root of its call hierarchy. */
+export const rootFile = (repo: RepoRef, run: Run, result: { file: { path: string; revision: string } }): WorkflowFileRef => ({
+  repo: `${repo.owner}/${repo.repo}`,
+  path: result.file.path,
+  revision: result.file.revision,
+  source: "run-commit",
+});
+
+/** The run's graph: across its reusable-workflow calls when the hierarchy was loaded (see hierarchy.ts). */
+export function graphFor(repo: RepoRef, run: Run, jobs: Job[], result: DefinitionResult, loaded?: { tree: WorkflowTree; stats: TreeStats }): RunGraph {
+  if (!("definition" in result)) return buildRunGraph(jobs, null, { run, unavailableReason: result.unavailableReason });
+  const tree = loaded?.tree ?? { file: rootFile(repo, run, result), definition: result.definition, calls: new Map() };
+  const graph = buildHierarchyGraph(jobs, tree, run);
+  if (loaded?.stats.filesRead) {
+    graph.evidence.notes.push(
+      `${loaded.stats.filesRead} called workflow file${loaded.stats.filesRead === 1 ? " was" : "s were"} read at the revisions this run used (limits: ${TREE_LIMITS.depth} levels, ${TREE_LIMITS.files} files per run).`,
+    );
+  }
   if ("definition" in result && run.event === "pull_request_target") {
     graph.evidence.notes.unshift("pull_request_target runs use the base branch's workflow file; the file at the run's commit may differ.");
   }

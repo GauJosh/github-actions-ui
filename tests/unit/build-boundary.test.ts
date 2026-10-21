@@ -24,6 +24,8 @@ const FORBIDDEN = [
   "[synthetic]", // synthetic fixture labels
   "Demo gallery", // fixture-only gallery
   "Demo scenario", // fixture-only scenario strip
+  "shared-workflows", // synthetic shared-workflow repository
+  "action-cd-policy", // synthetic shared-workflow steps
   "fixtures.lock", // fixture server
   "gunzip",
   "raw.githubusercontent",

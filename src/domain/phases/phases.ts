@@ -4,10 +4,13 @@
 // Where grouping comes from (always shown to the user):
 // - "declared": the repository's optional `.github/actions-ui-phases.yml` (a GitHub Actions UI convention;
 //   GitHub itself has no notion of release phases);
-// - "inferred": from `environment:` in the workflow file, only when every job can be placed unambiguously;
+// - "inferred": from `environment:` in the workflow files (including called workflows, and `${{ inputs.x }}`
+//   filled from a caller's literal input), only when every job can be placed unambiguously. Jobs before the first
+//   deployment are grouped by the top-level reusable-workflow call they belong to;
 // - otherwise no overview is offered and the raw execution graph is used.
 // Phase-to-phase arrows are aggregated from real `needs` edges only. Nothing here invents dependencies.
 import { jobStatus, type GraphEdge, type GraphNode, type NodeStatus, type RunGraph } from "../graph/build";
+import { topLevelCall } from "../graph/hierarchy";
 import type { WorkflowDefinition } from "../graph/workflow-definition";
 import type { Job } from "../types";
 
@@ -250,23 +253,38 @@ function inferredGrouping(graph: RunGraph): Grouping | null {
   const nodePhase = new Map<string, string>();
   for (const n of envNodes) nodePhase.set(n.key, `env:${n.environment}`);
   let pre = false;
+  const calls = new Map<string, { label: string; layer: number }>();
   for (const n of graph.nodes) {
     if (nodePhase.has(n.key) || n.source !== "workflow-file") continue;
+    // Inside a call that passes a literal `environment` input naming a declared environment: that environment.
+    const input = n.context?.environmentInput;
+    if (input && envs.includes(input)) {
+      nodePhase.set(n.key, `env:${input}`);
+      continue;
+    }
     const dist = ancestors(n.key, graph.edges);
-    const envAncestors = [...dist].filter(([k]) => nodePhase.has(k));
+    const envAncestors = [...dist].filter(([k]) => envNodes.some((e) => e.key === k) || nodePhase.get(k)?.startsWith("env:"));
     if (envAncestors.length === 0) {
-      nodePhase.set(n.key, "pre");
-      pre = true;
+      const call = topLevelCall(n);
+      if (call) {
+        nodePhase.set(n.key, `call:${call.id}`);
+        const prev = calls.get(call.id);
+        calls.set(call.id, { label: call.label, layer: Math.min(prev?.layer ?? Infinity, layer.get(n.key) ?? 0) });
+      } else {
+        nodePhase.set(n.key, "pre");
+        pre = true;
+      }
       continue;
     }
     const nearest = Math.min(...envAncestors.map(([, d]) => d));
-    const candidates = new Set(envAncestors.filter(([, d]) => d === nearest).map(([k]) => nodePhase.get(k)!));
+    const candidates = new Set(envAncestors.filter(([, d]) => d === nearest).map(([k]) => nodePhase.get(k)!).filter(Boolean));
     if (candidates.size === 1) nodePhase.set(n.key, [...candidates][0]!);
   }
   return {
     source: "inferred",
-    note: "Phases inferred from `environment:` in the workflow file: each environment is a phase, and other jobs join the phase of their nearest upstream deployment. GitHub does not classify jobs into phases.",
+    note: `Phases inferred from \`environment:\` in the workflow file${graph.nodes.some((n) => n.context) ? "s, including called workflows" : ""}: each environment is a phase, and other jobs join the phase of their nearest upstream deployment${calls.size ? "; jobs before the first deployment are grouped by the reusable workflow call they belong to" : ""}. GitHub does not classify jobs into phases.`,
     decls: [
+      ...[...calls].sort((a, b) => a[1].layer - b[1].layer).map(([id, c]) => ({ id: `call:${id}`, name: c.label, kind: "other" as const })),
       ...(pre ? [{ id: "pre", name: "Before deployment", kind: "build" as const }] : []),
       ...envs.map((e) => ({ id: `env:${e}`, name: e, kind: "deploy" as const, environment: e })),
     ],
@@ -287,7 +305,12 @@ export function buildOverview(
   }
   const grouping = options.manifest ? declaredGrouping(graph, options.manifest) : inferredGrouping(graph);
   if (!grouping) {
-    return { unavailable: "This workflow declares no phases and no deployment environments, so there is no reliable way to group its jobs. Use the execution graph." };
+    const unread = graph.nodes.some((n) => n.callId && !n.resolvedWorkflow);
+    return {
+      unavailable: unread
+        ? "No deployment environments were found, but some called workflows could not be read, so environments inside them are unknown (see the execution graph's notes)."
+        : "This workflow declares no phases and no deployment environments, so there is no reliable way to group its jobs. Use the execution graph.",
+    };
   }
   const gates = options.gates ?? new Map<string, GateState>();
   const nodes = new Map(graph.nodes.map((n) => [n.key, n]));
