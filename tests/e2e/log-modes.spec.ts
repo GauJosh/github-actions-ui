@@ -109,9 +109,12 @@ test("Essential output by default: noise folded into labelled rows, meaningful l
   // All output: every line, unchanged; the step, line and highlight are kept.
   await page.getByRole("tab", { name: "All output" }).click();
   await expect(page.locator("[data-testid=log-fold]")).toHaveCount(0);
+  // The view stays on the selected line; the top of the log is a scroll away (rows are virtualised).
+  await expect(highlighted).toHaveAttribute("data-line", "53");
+  await expect(highlighted).toBeInViewport();
+  await page.getByTestId("log-view").evaluate((el) => (el.scrollTop = 0));
   await expect(row(page, 5)).toContainText("##[endgroup]");
   await expect(row(page, 18)).toContainText("token: ***");
-  await expect(highlighted).toHaveAttribute("data-line", "53");
   await expect(page).toHaveURL(/\/jobs\/2\/steps\/4$/);
   await expect(page.getByTestId("step-locator")).toHaveAttribute("data-state", /found|approximate/);
   expect(served.methods.every((m) => m === "GET" || m === "HEAD" || m === "OPTIONS")).toBe(true);
