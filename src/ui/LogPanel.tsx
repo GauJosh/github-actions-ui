@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Environment } from "../app/environment";
-import { compileSearch, type ViewSpec, type ViewSummary } from "../domain/logs/view";
-import { hasLogOutput, locateStep, mapSteps, targetLine, type LogMarkers, type StepLocation } from "../domain/steps/step-map";
+import { jobStatus } from "../domain/graph/build";
+import { compileSearch, type Evidence, type StepSpec, type ViewSpec, type ViewSummary } from "../domain/logs/view";
+import { hasLogOutput, locateStep, mapSteps, targetLine, type LogMarkers, type StepLocation, type StepMapping } from "../domain/steps/step-map";
 import type { Job, JobRef, Step } from "../domain/types";
 import type { LogLoader, LogSnapshot } from "../logs/download/loader";
 import { count, logStatusText, mb } from "./copy";
+import { formatDuration } from "./format";
 import { LogControls, ViewDescription } from "./LogControls";
 import { setLogPrefs, useLogPrefs, type LogPrefs } from "./log-prefs";
-import { VirtualLog } from "./VirtualLog";
+import { StatusIcon } from "./status";
+import { VirtualLog, type StepHeading } from "./VirtualLog";
 
 /** Links that keep the user's place (run, phase, view, job and step) in the URL. */
 export type LogLinks = { line(n: number): string; step(n: number): string };
@@ -58,15 +61,18 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
   const [query, setQuery] = useState("");
   const [applied, setApplied] = useState("");
   const [expanded, setExpanded] = useState<[number, number][]>([]);
+  /** Steps the user opened (true) or collapsed (false); others follow the default. */
+  const [stepOpen, setStepOpen] = useState<Record<number, boolean>>({});
   const fetchRows = useCallback((version: number, from: number, n: number) => loader.viewRows(version, from, n), [loader]);
   const status = snap.status;
   const showFull = snap.lines > 0 && ["loading", "cancelled", "complete", "incomplete"].includes(status);
   const showTail = snap.tail !== undefined && status !== "complete";
   const partial = status !== "complete";
 
-  // Step markers are scanned once per completed load (a worker restart or retry gives a new load).
+  // Step markers are scanned once per completed load (a worker restart or retry gives a new load). Steps are only
+  // located in a complete log: line numbers and the last step's end need all of it.
   const loadKey = `${snap.restarts}:${snap.crc32 ?? ""}`;
-  const wantMarkers = step !== undefined && status === "complete";
+  const wantMarkers = job.steps !== undefined && status === "complete";
   const [scanned, setScanned] = useState<{ key: string; markers: LogMarkers | null } | null>(null);
   useEffect(() => {
     if (!wantMarkers) return;
@@ -94,7 +100,11 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
   // The display view (mode, filters, search) is built in the worker over the lines loaded so far; nothing here
   // triggers a download. While loading, it is rebuilt at most once a second.
   const lines = useThrottled(snap.lines, status === "loading" ? 1000 : 0);
-  const stepRange = segment ? { start: segment.startLine, end: segment.endLine } : undefined;
+  const stepRange = segment ? { number: segment.stepNumber, start: segment.startLine, end: segment.endLine } : undefined;
+  const scope: [number, number] | undefined = prefs.scope === "step" && stepRange ? [stepRange.start - 1, stepRange.end - 1] : undefined;
+  // Step-first output: when a step failed, steps that succeeded start collapsed so the failure and its context are
+  // what the log shows first. The selected step always starts open; the user can open or collapse any step.
+  const steps = useMemo(() => (mapping && job.steps ? stepSpecs(job.steps, mapping, step, stepOpen) : undefined), [mapping, job.steps, step, stepOpen]);
   const spec: ViewSpec = useMemo(
     () => ({
       mode: prefs.mode,
@@ -102,21 +112,16 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
       context: prefs.context,
       expanded,
       reveal: target !== undefined ? [target - 1] : [],
+      ...(scope && { scope }),
+      ...(steps && { steps }),
       ...(applied && {
-        search: {
-          query: applied,
-          caseSensitive: prefs.caseSensitive,
-          wholeWord: prefs.wholeWord,
-          regex: prefs.regex,
-          only: prefs.only,
-          ...(prefs.scope === "step" && stepRange && { scope: [stepRange.start - 1, stepRange.end - 1] as [number, number] }),
-        },
+        search: { query: applied, caseSensitive: prefs.caseSensitive, wholeWord: prefs.wholeWord, regex: prefs.regex, only: prefs.only, ...(scope && { scope }) },
       }),
     }),
-    [prefs, expanded, target, applied, stepRange?.start, stepRange?.end], // eslint-disable-line react-hooks/exhaustive-deps -- the step range by value
+    [prefs, expanded, target, applied, steps, scope?.[0], scope?.[1]], // eslint-disable-line react-hooks/exhaustive-deps -- the scope by value
   );
   // Scrolls to the target once per target and mode, using only a view built for them.
-  const scrollKey = `${target}|${prefs.mode}|${prefs.filters.join()}|${prefs.only}|${applied}`;
+  const scrollKey = `${target}|${prefs.mode}|${prefs.filters.join()}|${prefs.only}|${applied}|${prefs.scope}|${steps ? "steps" : ""}`;
   const [view, setView] = useState<{ key: string; scrollKey: string; summary: ViewSummary } | null>(null);
   const viewKey = `${snap.restarts}:${JSON.stringify(spec)}:${lines}`;
   useEffect(() => {
@@ -155,6 +160,33 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
     jumped.current = key;
     if (current === null) goToLine(summary.matches[0]!);
   });
+  // Previous/next error evidence, in log order, within the scope.
+  const errorLines = summary?.errorLines ?? [];
+  const currentError = target !== undefined && errorLines.includes(target - 1) ? errorLines.indexOf(target - 1) : null;
+  function moveError(delta: 1 | -1) {
+    if (errorLines.length === 0) return;
+    const from = target !== undefined ? target - 1 : -1;
+    const next =
+      currentError !== null
+        ? errorLines[(currentError + delta + errorLines.length) % errorLines.length]!
+        : delta > 0
+          ? (errorLines.find((m) => m > from) ?? errorLines[0]!)
+          : ([...errorLines].reverse().find((m) => m < from) ?? errorLines[errorLines.length - 1]!);
+    goToLine(next);
+  }
+  const approximate = mapping !== undefined && mapping.mapping !== "exact-checks-passed";
+  const stepHeading = useCallback(
+    (n: number): StepHeading | undefined => {
+      const s = job.steps?.find((x) => x.number === n);
+      if (!s) return undefined;
+      const ms = s.started_at && s.completed_at ? Date.parse(s.completed_at) - Date.parse(s.started_at) : undefined;
+      return { name: s.name, status: jobStatus(s), duration: formatDuration(ms), approximate, selected: n === step };
+    },
+    [job.steps, approximate, step],
+  );
+  function toggleStep(n: number, collapsed: boolean) {
+    setStepOpen((o) => ({ ...o, [n]: !collapsed }));
+  }
   function runSearch() {
     jumped.current = "";
     setApplied(query);
@@ -234,6 +266,10 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
         </p>
       )}
 
+      {showFull && summary && (
+        <FailureEvidence job={job} mapping={mapping} summary={summary} partial={partial} links={links} onExpand={expand} onOpenStep={(n) => setStepOpen((o) => ({ ...o, [n]: true }))} />
+      )}
+
       {showFull && (
         <LogControls
           prefs={prefs}
@@ -246,17 +282,23 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
           step={stepRange}
           current={current}
           onMove={move}
+          currentError={currentError}
+          onMoveError={moveError}
           expanded={expanded.length}
           onCollapse={() => setExpanded([])}
         />
       )}
-      {showFull && summary && <ViewDescription prefs={prefs} summary={summary} partial={partial} />}
+      {showFull && summary && <ViewDescription prefs={prefs} summary={summary} partial={partial} steps={summary.stepRows.length} />}
+      {showFull && summary && prefs.mode === "essential" && <StepGrouping job={job} mapping={mapping} status={status} steps={steps} onAll={(open) => setStepOpen(Object.fromEntries((steps ?? []).map((s) => [s.number, open])))} />}
 
       {showFull && summary && (
         <VirtualLog
           rowCount={summary.rowCount}
           version={summary.version}
           fetchRows={fetchRows}
+          stepRows={summary.stepRows}
+          step={stepHeading}
+          onToggleStep={toggleStep}
           scrollToRow={view?.scrollKey === scrollKey ? summary.revealRows[0] : undefined}
           scrollKey={scrollKey}
           highlight={target}
@@ -304,6 +346,135 @@ function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loade
 }
 
 const FAILED = new Set(["failure", "timed_out", "cancelled"]);
+
+/** View steps from the located segments. With a failed step, steps that did not fail start collapsed. */
+function stepSpecs(jobSteps: Step[], mapping: StepMapping, selected: number | undefined, open: Record<number, boolean>): StepSpec[] {
+  const failed = jobSteps.some((s) => FAILED.has(s.conclusion ?? ""));
+  const conclusion = new Map(jobSteps.map((s) => [s.number, s.conclusion]));
+  return [...mapping.segments]
+    .sort((a, b) => a.startLine - b.startLine)
+    .map((seg) => {
+      const quiet = failed && !FAILED.has(conclusion.get(seg.stepNumber) ?? "") && seg.stepNumber !== selected;
+      return { number: seg.stepNumber, start: seg.startLine - 1, end: seg.endLine - 1, collapsed: !(open[seg.stepNumber] ?? !quiet) };
+    });
+}
+
+/** What the step headings in Essential output mean, or why the log is not grouped by step. */
+function StepGrouping({ job, mapping, status, steps, onAll }: { job: Job; mapping?: StepMapping; status: string; steps?: StepSpec[]; onAll(open: boolean): void }) {
+  let text: React.ReactNode;
+  if (!job.steps) text = "GitHub returned no step data for this job, so the log is not grouped by step.";
+  else if (status !== "complete") text = "The log is grouped by step once it has fully loaded (step boundaries need the whole log).";
+  else if (!mapping) text = "Locating the steps in the log…";
+  else if (!steps || steps.length === 0) text = "The steps could not be located in the log, so it is not grouped by step.";
+  else {
+    const collapsed = steps.filter((s) => s.collapsed).length;
+    const failed = job.steps.some((s) => FAILED.has(s.conclusion ?? ""));
+    text = (
+      <>
+        {mapping.mapping === "exact-checks-passed" ? "Grouped by step, from the runner's step markers." : <strong>Grouped by step; the step boundaries are approximate (marked ≈), so a step's lines may include a neighbour's output.</strong>}{" "}
+        {collapsed > 0 && (failed ? `${count(collapsed)} steps that did not fail are collapsed. ` : `${count(collapsed)} steps are collapsed. `)}
+        <button type="button" className="link-button" onClick={() => onAll(true)}>
+          Expand all steps
+        </button>{" "}
+        <button type="button" className="link-button" onClick={() => onAll(false)}>
+          Collapse all steps
+        </button>
+      </>
+    );
+  }
+  return (
+    <p className="note step-grouping" data-testid="step-grouping">
+      {text}
+    </p>
+  );
+}
+
+const TIER_TEXT: Record<Evidence["tier"], string> = {
+  annotation: "runner error annotation",
+  signature: "failure signature",
+  "test failure": "test or build failure report",
+  "exit code": "runner annotation (exit code only)",
+  "text match": "text that only looks like an error",
+};
+
+function EvidenceList({ evidence, links, testid }: { evidence: Evidence[]; links: LogLinks; testid: string }) {
+  return (
+    <ol className="evidence-list" data-testid={testid}>
+      {evidence.map((e) => (
+        <li key={e.n} data-tier={e.tier}>
+          <a href={links.line(e.n + 1)}>Line {count(e.n + 1)}</a> <span className={`kbadge kbadge-${e.tier === "text match" ? "text" : e.tier === "annotation" || e.tier === "exit code" ? "annotation" : "signature"}`}>{TIER_TEXT[e.tier]}</span>{" "}
+          <code title={e.reason}>{e.text.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, "")}</code>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+type FailureProps = { job: Job; mapping?: StepMapping; summary: ViewSummary; partial: boolean; links: LogLinks; onExpand(start: number, end: number): void; onOpenStep(n: number): void };
+
+/** Which steps failed, according to GitHub, and the strongest evidence found in each one's lines. */
+function FailureEvidence({ job, mapping, summary, partial, links, onExpand, onOpenStep }: FailureProps) {
+  const failed = (job.steps ?? []).filter((s) => FAILED.has(s.conclusion ?? ""));
+  const jobFailed = FAILED.has(job.conclusion ?? "");
+  if (failed.length === 0 && !jobFailed) return null;
+  const approximate = mapping !== undefined && mapping.mapping !== "exact-checks-passed";
+  const located = failed.map((s) => ({ step: s, segment: mapping?.segments.find((x) => x.stepNumber === s.number), found: summary.steps.find((x) => x.number === s.number) }));
+  const unlocated = located.filter((x) => !x.segment);
+  return (
+    <section className="failure-evidence" data-testid="failure-evidence" aria-label="Failure evidence">
+      <h4>Failure evidence</h4>
+      {failed.length === 0 && <p>{job.steps ? "GitHub reports that this job failed, but no step is marked failed." : "GitHub reports that this job failed; it returned no step data, so the failed step is not known."}</p>}
+      {located
+        .filter((x) => x.segment)
+        .map(({ step, segment, found }) => (
+          <div key={step.number} className="failed-step" data-testid="failed-step" data-step={step.number}>
+            <p>
+              <StatusIcon status={jobStatus(step)} /> <strong>Step {step.number} · {step.name}</strong> failed (GitHub step result) · {approximate ? "≈ " : ""}lines {count(segment!.startLine)}–{count(segment!.endLine)}{" "}
+              <a href={links.step(step.number)} onClick={() => onOpenStep(step.number)}>
+                Open this step
+              </a>
+            </p>
+            {found && found.evidence.length > 0 ? (
+              <EvidenceList evidence={found.evidence} links={links} testid="step-evidence" />
+            ) : (
+              <div className="no-evidence" data-testid="no-evidence">
+                <p>
+                  No error line was identified in this step&apos;s lines: no runner annotation, failure signature or error-like text. The step may have failed through an exit code without a
+                  message, or printed its error in a format that is not recognised.
+                </p>
+                <p className="step-actions">
+                  <a href={links.line(segment!.endLine)} onClick={() => onOpenStep(step.number)}>
+                    Go to the step&apos;s last line ({count(segment!.endLine)})
+                  </a>
+                  <button type="button" onClick={() => onExpand(segment!.startLine - 1, segment!.endLine - 1)}>
+                    Show all of this step&apos;s lines
+                  </button>
+                </p>
+              </div>
+            )}
+          </div>
+        ))}
+      {(unlocated.length > 0 || failed.length === 0) && (
+        <div className="failed-step" data-testid="unlocated-evidence">
+          {unlocated.length > 0 && (
+            <p>
+              {unlocated.map((x) => `Step ${x.step.number} · ${x.step.name}`).join(", ")} failed (GitHub step result), but {unlocated.length === 1 ? "its lines are" : "their lines are"} not located in the log
+              {partial ? " until the full log has loaded" : ""}.
+            </p>
+          )}
+          {summary.topEvidence.length > 0 ? (
+            <>
+              <p>Strongest error evidence in {partial ? "the lines loaded so far" : "the whole log"}:</p>
+              <EvidenceList evidence={summary.topEvidence} links={links} testid="log-evidence" />
+            </>
+          ) : (
+            <p data-testid="no-log-evidence">No error line was identified in {partial ? "the lines loaded so far" : "the log"}.</p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
 
 type LocatorProps = {
   anchorRef: React.Ref<HTMLDivElement>;
@@ -372,15 +543,36 @@ function StepLocator({ anchorRef, job, step, stepInfo, snap, scanFailed, locatio
   } else {
     const { segment, approximate, issues } = location;
     state = approximate ? "approximate" : "found";
-    const shownError = failed && segment.errorLines.length > 0 && showingLine === undefined;
-    const focus = showingLine ?? (shownError ? segment.errorLines[0]! : segment.startLine);
+    const strongest = failed ? targetLine(segment, stepInfo) : segment.startLine;
+    const shownError = failed && strongest !== segment.startLine && showingLine === undefined;
+    const focus = showingLine ?? strongest;
     body = (
       <>
         <p data-testid="step-range">
           {approximate ? "Approximately lines" : "Lines"} {segment.startLine}–{segment.endLine}
-          {shownError ? `. Showing its first error line (${segment.errorLines[0]}).` : showingLine !== undefined ? `. Showing line ${showingLine}.` : ". Showing its first line."}{" "}
+          {shownError ? `. Showing its strongest error evidence (line ${strongest}).` : showingLine !== undefined ? `. Showing line ${showingLine}.` : ". Showing its first line."}{" "}
           <a href={links.line(segment.startLine)}>Step start</a>
         </p>
+        {failed && segment.errorLines.length === 0 && segment.evidence.length === 0 && (
+          <p className="step-errors" data-testid="step-no-errors">
+            GitHub reports that this step failed, but no error line was identified in its lines. Its output is shown from its first line.
+          </p>
+        )}
+        {segment.evidence.some((e) => e.rank === 1 || e.rank === 2) && (
+          <p className="step-errors" data-testid="step-signatures">
+            Failure signatures in this step:{" "}
+            {segment.evidence
+              .filter((e) => e.rank === 1 || e.rank === 2)
+              .map((e) => e.line)
+              .sort((a, b) => a - b)
+              .slice(0, 12)
+              .map((n) => (
+                <a key={n} href={links.line(n)}>
+                  {n}
+                </a>
+              ))}
+          </p>
+        )}
         {segment.errorLines.length > 0 && (
           <p className="step-errors" data-testid="step-errors">
             Error lines in this step:{" "}
@@ -461,7 +653,7 @@ function Fallback({ failed, issues, onFindErrors }: { failed: boolean; issues: s
           <button onClick={onFindErrors} data-testid="find-errors">
             Show errors and warnings in the whole log
           </button>{" "}
-          The step failed; its error lines are usually marked <code>{ERROR_MARKER}</code>.
+          The step failed; its error lines are usually marked <code>{ERROR_MARKER}</code> or recognised as failure signatures.
         </p>
       ) : (
         <p>Search the log below, or open it on GitHub, which shows each step's output separately.</p>

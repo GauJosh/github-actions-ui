@@ -14,7 +14,8 @@
   - Dependency edges come only from `needs:` in the workflow file at the run's commit. Details: ARCHITECTURE §11.3.
   - **Step-to-log navigation** (requested 2026-10-20): step mapping v2 with checks C1–C4, the risk flag and the "approximate" and "unavailable" states, implemented locally, **in review**, not committed (ARCHITECTURE §11.4). It covers M2 acceptance criteria 1 and 2.
   - **Nested reusable-workflow hierarchy** (requested 2026-10-20 after the first work trial): implemented and pushed (ARCHITECTURE §11.3).
-  - **Essential logs and log exploration** (requested 2026-10-20): display modes, conservative classification, quick filters, search and failure-investigation controls (ARCHITECTURE §8, log display modes).
+  - **Essential logs and log exploration** (requested 2026-10-20): display modes, conservative classification, quick filters, search and failure-investigation controls (ARCHITECTURE §8, log display modes). Pushed.
+  - **Failure detection and step-first logs** (requested 2026-10-21 after a work trial missed a Node.js failure): evidence tiers with failure signatures and stack traces, step headings with collapse, the failure evidence panel, scope and error navigation (ARCHITECTURE §8, error evidence tiers). Implemented locally, not committed.
   - M2's other log-exploration items (ANSI, groups, scaled scrolling, the worker cache) are still open. Q2 and Q10 remain open.
 - Commits and pushes each need approval.
 

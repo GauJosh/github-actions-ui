@@ -22,6 +22,7 @@ const FORBIDDEN = [
   "Fixture mode blocked a request", // fixture transport
   "990000001", // synthetic fixture run
   "[synthetic]", // synthetic fixture labels
+  "example/publish-notes", // synthetic failure log (tools/fixture-server/failure-logs.ts)
   "Demo gallery", // fixture-only gallery
   "Demo scenario", // fixture-only scenario strip
   "shared-workflows", // synthetic shared-workflow repository

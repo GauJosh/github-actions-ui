@@ -28,7 +28,7 @@ test("a failed CD step opens the log at its first error line, highlighted, in vi
   const locator = page.getByTestId("step-locator");
   await expect(locator).toHaveAttribute("data-state", "found");
   await expect(locator).toContainText("Step 2: Smoke tests");
-  await expect(page.getByTestId("step-range")).toHaveText("Lines 8–20. Showing its first error line (18). Step start");
+  await expect(page.getByTestId("step-range")).toHaveText("Lines 8–20. Showing its strongest error evidence (line 18). Step start");
   await expect(page.getByTestId("step-errors")).toContainText("Error lines in this step:");
   await expect(page.getByTestId("step-errors").getByRole("link")).toHaveText(["18", "19"]);
   await expect(locator).toContainText("GitHub runner log markers may not always give exact step boundaries.");

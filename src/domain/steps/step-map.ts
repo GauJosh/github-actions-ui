@@ -12,7 +12,8 @@
 //   C1 every executed step gets a segment, in order;
 //   C2 the segment's first timestamp falls within the step's start/end (±1 s, API times are whole seconds);
 //   C3 the opening marker is not another step's exact name;
-//   C4 a failed step's segment holds `##[error]` lines, and no `##[error]` line falls in a passing step;
+//   C4 a failed step's segment holds `##[error]` lines or a failure signature (an exception, a compiler
+//      diagnostic, … from the line classifier), and no `##[error]` line falls in a passing step;
 // plus the risk flag "more top-level Run markers than executed run steps". If anything trips, the mapping is
 // "approximate". A step with no matched marker has no segment: no line is attributed to it.
 import type { Step } from "../types";
@@ -20,7 +21,9 @@ import type { Step } from "../types";
 export type MarkerKind = "run" | "post" | "complete";
 /** `line` is 0-based. `time` is epoch ms from the line's timestamp, when it has one. */
 export type LogMarker = { line: number; kind: MarkerKind; text: string; time?: number; nested: boolean };
-export type LogMarkers = { lineCount: number; firstTime?: number; markers: LogMarker[]; errors: number[]; capped: boolean };
+/** A line of failure evidence: `rank` from `evidenceRank` (0 strongest). `line` is 0-based. */
+export type EvidenceLine = { line: number; rank: number };
+export type LogMarkers = { lineCount: number; firstTime?: number; markers: LogMarker[]; errors: number[]; capped: boolean; evidence?: EvidenceLine[] };
 
 const MAX_MARKERS = 20_000;
 const MAX_ERRORS = 20_000;
@@ -77,8 +80,14 @@ export function stepKind(step: Pick<Step, "name">): StepKind {
   return "run";
 }
 
-/** 1-based, inclusive line numbers, as shown in the log view. */
-export type StepSegment = { stepNumber: number; startLine: number; endLine: number; marker: string; errorLines: number[] };
+/**
+ * 1-based, inclusive line numbers, as shown in the log view. `errorLines` are `##[error]` lines; `evidence` is every
+ * line of failure evidence (annotations, failure signatures, text matches), strongest first, then in log order.
+ */
+export type StepSegment = { stepNumber: number; startLine: number; endLine: number; marker: string; errorLines: number[]; evidence: EvidenceLine[] };
+
+/** Ranks up to this are strong enough to confirm a failed step's boundaries (C4): annotations, signatures, test failures, exit codes. */
+const CONFIRMING_RANK = 3;
 
 export type StepMapping = {
   mapping: "exact-checks-passed" | "approximate" | "unavailable";
@@ -179,15 +188,20 @@ export function mapSteps(steps: Step[], log: LogMarkers): StepMapping {
     const startLine = marker.line + 1;
     const endLine = i + 1 < ordered.length ? starts.get(ordered[i + 1]!.number)!.line : log.lineCount;
     const errorLines = log.errors.filter((e) => e + 1 >= startLine && e + 1 <= endLine).map((e) => e + 1);
+    const evidence = (log.evidence ?? [])
+      .filter((e) => e.line + 1 >= startLine && e.line + 1 <= endLine)
+      .map((e) => ({ line: e.line + 1, rank: e.rank }))
+      .sort((a, b) => a.rank - b.rank || a.line - b.line);
     // C2
     if (!inWindow(step, marker.time)) issues.push(`Step ${step.number}'s first log line is outside the step's reported start and end times.`);
     // C3
     const owner = names.get(marker.text);
     if (owner !== undefined && owner !== step.number) issues.push(`Step ${step.number} starts at a marker named exactly like step ${owner}.`);
     // C4
-    if (step.conclusion === "failure" && errorLines.length === 0) issues.push(`Step ${step.number} failed, but no error line was found in its part of the log.`);
+    if (step.conclusion === "failure" && errorLines.length === 0 && !evidence.some((e) => e.rank <= CONFIRMING_RANK))
+      issues.push(`Step ${step.number} failed, but no error line was found in its part of the log.`);
     if (step.conclusion === "success" && errorLines.length > 0) issues.push(`An error line falls in step ${step.number}, which succeeded.`);
-    return { stepNumber: step.number, startLine, endLine, marker: marker.text, errorLines };
+    return { stepNumber: step.number, startLine, endLine, marker: marker.text, errorLines, evidence };
   });
   segments.sort((a, b) => a.stepNumber - b.stepNumber);
 
@@ -205,7 +219,8 @@ export function locateStep(steps: Step[], mapping: StepMapping, stepNumber: numb
   return { kind: "segment", segment, approximate: mapping.mapping !== "exact-checks-passed", issues: mapping.issues };
 }
 
-/** The line to open: a failed step's first error line, otherwise the step's first line. */
+/** The line to open: a failed step's strongest error evidence (or its first `##[error]` line), otherwise its first line. */
 export function targetLine(segment: StepSegment, step: Pick<Step, "conclusion"> | undefined): number {
-  return step && step.conclusion !== "success" && segment.errorLines.length ? segment.errorLines[0]! : segment.startLine;
+  if (!step || step.conclusion === "success") return segment.startLine;
+  return segment.evidence[0]?.line ?? segment.errorLines[0] ?? segment.startLine;
 }

@@ -76,10 +76,24 @@ test("Essential output by default: noise folded into labelled rows, meaningful l
   await expect(page.getByTestId("log-status")).toHaveAttribute("data-status", "complete");
   await expect(page.getByRole("tab", { name: "Essential output" })).toHaveAttribute("aria-selected", "true");
 
-  // The failed step opens at its runner error annotation, highlighted.
+  // The failed step opens at its strongest evidence, the test runner's failure report (the exit-code annotation at
+  // line 53 only says that the script failed), highlighted.
   const highlighted = page.locator(".row.highlighted");
-  await expect(highlighted).toHaveAttribute("data-line", "53");
-  await expect(highlighted.locator(".kbadge")).toHaveText("error");
+  await expect(highlighted).toHaveAttribute("data-line", "47");
+  await expect(highlighted.locator(".kbadge")).toHaveText("test failure");
+
+  // Step-first: a heading per step with its status; the steps that did not fail are collapsed, the failed one is open.
+  const headings = page.getByTestId("log-step");
+  await expect(headings).toHaveCount(6);
+  await expect(headings.nth(3)).toHaveAttribute("data-status", "failure");
+  await expect(headings.nth(3)).toContainText("Step 4 · Run npm test");
+  await expect(headings.nth(3)).toHaveAttribute("data-collapsed", "false");
+  for (const i of [0, 1, 2, 4, 5]) await expect(headings.nth(i)).toHaveAttribute("data-collapsed", "true");
+  await expect(headings.nth(2)).toContainText("done"); // a collapsed step's last output line, as a hint
+  await expect(row(page, 32)).toHaveCount(0);
+  await expect(page.getByTestId("step-grouping")).toContainText("5 steps that did not fail are collapsed.");
+  await page.getByRole("button", { name: "Expand all steps" }).click();
+  for (const i of [0, 1, 2, 4, 5]) await expect(headings.nth(i)).toHaveAttribute("data-collapsed", "false");
 
   // Folded: setup preamble and groups, the step echo, control markers, repeats. Visible: headers, action output, results.
   const setup = page.locator('[data-testid=log-fold][data-start="1"]');
@@ -110,7 +124,8 @@ test("Essential output by default: noise folded into labelled rows, meaningful l
   await page.getByRole("tab", { name: "All output" }).click();
   await expect(page.locator("[data-testid=log-fold]")).toHaveCount(0);
   // The view stays on the selected line; the top of the log is a scroll away (rows are virtualised).
-  await expect(highlighted).toHaveAttribute("data-line", "53");
+  await expect(highlighted).toHaveAttribute("data-line", "47");
+  await expect(page.getByTestId("log-step")).toHaveCount(0); // All output is the original log: no headings added
   await expect(highlighted).toBeInViewport();
   await page.getByTestId("log-view").evaluate((el) => (el.scrollTop = 0));
   await expect(row(page, 5)).toContainText("##[endgroup]");
@@ -128,19 +143,20 @@ test("Errors & warnings: annotations versus text matches, step header as evidenc
   const shown = page.locator(".row[data-line]");
   await expect(shown).toHaveCount(7);
   await expect.poll(() => shown.evaluateAll((rows) => rows.map((r) => Number(r.getAttribute("data-line"))))).toEqual([38, 47, 48, 49, 51, 52, 53]);
-  await expect(row(page, 53).locator(".kbadge")).toHaveText("error");
+  await expect(row(page, 53).locator(".kbadge")).toHaveText("exit code");
+  await expect(row(page, 47).locator(".kbadge")).toHaveText("test failure");
   await expect(row(page, 52).locator(".kbadge")).toHaveText("warning");
   await expect(row(page, 49).locator(".kbadge")).toHaveText("error?");
   await expect(row(page, 49).locator(".kbadge")).toHaveAttribute("title", /does not show that a command or the job failed/);
   await expect(row(page, 51).locator(".kbadge")).toHaveText("warning?");
   // Familiar words without a pattern match are not errors.
   await expect(row(page, 50)).toHaveCount(0);
-  await expect(page.getByTestId("log-view-summary")).toContainText("Errors & warnings: 1 error and 1 warning annotations, 4 lines that look like errors, warnings or test failures");
+  await expect(page.getByTestId("log-view-summary")).toContainText("Errors & warnings: 1 error and 1 warning annotations, 2 failure signatures, 2 lines that only look like errors or warnings");
 
   await page.getByLabel("Context lines").selectOption("1");
   await expect(row(page, 50)).toContainText("error handling module loaded");
   await expect(row(page, 54)).toContainText("Post job cleanup.");
-  await expect(page.locator(".row.highlighted")).toHaveAttribute("data-line", "53");
+  await expect(page.locator(".row.highlighted")).toHaveAttribute("data-line", "47");
 });
 
 test("failure investigation: reveal around the error, unfold the step, switch modes, keeping the step selected", async ({ page }) => {
@@ -148,7 +164,7 @@ test("failure investigation: reveal around the error, unfold the step, switch mo
   await openFailedStep(page);
   const actions = page.getByTestId("step-actions");
   await expect(row(page, 39)).toHaveCount(0); // the step's script echo is folded
-  await actions.getByRole("button", { name: "Show 20 lines around line 53" }).click();
+  await actions.getByRole("button", { name: "Show 20 lines around line 47" }).click();
   await expect(row(page, 39)).toContainText("npm test");
   await expect(row(page, 44)).toContainText("##[endgroup]");
   await page.getByRole("button", { name: /Fold expanded lines again/ }).click();
@@ -156,7 +172,7 @@ test("failure investigation: reveal around the error, unfold the step, switch mo
   await expect(row(page, 41)).toContainText("shell: /usr/bin/bash -e {0}");
   await actions.getByRole("button", { name: "Errors & warnings" }).click();
   await expect(page.getByRole("tab", { name: "Errors & warnings" })).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".row.highlighted")).toHaveAttribute("data-line", "53");
+  await expect(page.locator(".row.highlighted")).toHaveAttribute("data-line", "47");
   await expect(page.getByTestId("job-details").locator('.step[aria-current="step"]')).toContainText("Run npm test");
 });
 
@@ -175,7 +191,7 @@ test("quick filters combine and show counts; unknown lines have their own filter
   await expect(page.locator('[data-testid=log-fold].fold-gap').first()).toContainText("not shown");
   await page.getByRole("button", { name: "Clear filters" }).click();
   await filters.locator('[data-filter="unclassified"]').click();
-  await expect.poll(() => lines.evaluateAll((rows) => rows.map((r) => Number(r.getAttribute("data-line"))).filter((n) => n !== 53))).toEqual([45, 50, 57]);
+  await expect.poll(() => lines.evaluateAll((rows) => rows.map((r) => Number(r.getAttribute("data-line"))).filter((n) => n !== 47))).toEqual([45, 50, 57]);
 });
 
 test("search: case, whole word, regular expressions (invalid ones are safe), count, next/previous, step scope, matching lines only", async ({ page }) => {
@@ -186,17 +202,19 @@ test("search: case, whole word, regular expressions (invalid ones are safe), cou
   await box.fill("error");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(summary).toHaveText("3 matching lines");
-  // The step's error line is itself a match, so the search stays there; next wraps to the first match.
-  await expect(page.getByTestId("search-position")).toHaveText("3 of 3");
-  await page.getByRole("button", { name: "Next match" }).click();
+  // A new search goes to its first match; next and previous wrap.
   await expect(page).toHaveURL(/\/steps\/4\/L49$/);
+  await expect(page.getByTestId("search-position")).toHaveText("1 of 3");
   await expect(row(page, 49).locator("mark")).toHaveText("Error");
   await page.getByRole("button", { name: "Next match" }).click();
   await expect(page).toHaveURL(/\/steps\/4\/L50$/);
-  await page.getByRole("button", { name: "Previous match" }).click();
-  await page.getByRole("button", { name: "Previous match" }).click();
+  await page.getByRole("button", { name: "Next match" }).click();
   await expect(page).toHaveURL(/\/steps\/4\/L53$/);
   await expect(page.getByTestId("search-position")).toHaveText("3 of 3");
+  await page.getByRole("button", { name: "Next match" }).click();
+  await expect(page).toHaveURL(/\/steps\/4\/L49$/);
+  await page.getByRole("button", { name: "Previous match" }).click();
+  await expect(page).toHaveURL(/\/steps\/4\/L53$/);
 
   await page.getByRole("button", { name: "Match case" }).click();
   await expect(summary).toHaveText("2 matching lines"); // "error handling…" and "##[error]", not "Error:"
@@ -222,11 +240,11 @@ test("search: case, whole word, regular expressions (invalid ones are safe), cou
   await box.fill("git");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(summary).toHaveText(/^[1-9]\d* matching lines$/); // checkout and its cleanup, outside the npm test step
-  await page.getByLabel("Search in").selectOption("step");
-  await expect(summary).toHaveText("No matches");
+  await page.getByLabel("Scope").selectOption("step");
+  await expect(summary).toHaveText("No matches in step 4");
 
   // Only matching lines, with context.
-  await page.getByLabel("Search in").selectOption("job");
+  await page.getByLabel("Scope").selectOption("job");
   await box.fill("503");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByLabel("Context lines").selectOption("1");
@@ -262,7 +280,7 @@ test("large log with many collapsed sections: folded, navigable, and every line 
   await mockGitHub(page, Buffer.from(lines.join("\n") + "\n"));
   await openFailedStep(page);
   await expect(page.getByTestId("log-status")).toHaveAttribute("data-status", "complete", { timeout: 60_000 });
-  await expect(page.getByTestId("log-view-summary")).toContainText(/Essential output: [\d,]+ of 100,042 lines shown; [\d,]+ folded into [\d,]+ expandable rows/);
+  await expect(page.getByTestId("log-view-summary")).toContainText(/Essential output, by step \(\d+ steps\): [\d,]+ of 100,042 lines shown; the rest are in [\d,]+ expandable rows or collapsed steps/);
   const fold = page.locator("[data-testid=log-fold]").filter({ hasText: "group “Section 1”" });
   await page.getByLabel("Search log").fill("section 19999 detail b");
   await page.getByRole("button", { name: "Search", exact: true }).click();

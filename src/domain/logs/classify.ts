@@ -9,8 +9,15 @@
 //      `shell:`, `with:` and `env:` lines (inside the step's `##[group]Run …`) fold as "step definition".
 //   4. A short list of exact runner lifecycle messages (job setup before the first step, orphan-process cleanup) fold.
 //   5. Three or more consecutive identical lines fold to the first one.
-// Everything else stays visible. Test/build results and error- or warning-looking text are recognised by anchored
-// patterns, labelled as text matches: a match does not prove that a command or the job failed.
+// Everything else stays visible. Error evidence has three tiers, never merged:
+//   - runner annotations (`##[error]`): explicit, written by the runner or an action;
+//   - strong failure signatures: formats tools only print when something failed — a named exception with its
+//     stack trace, a Node.js error code, a Python traceback's exception, an uncaught Java exception, a Go panic,
+//     a compiler diagnostic, `command not found`, a failed make target, npm's error block, a test runner's failure
+//     report;
+//   - text matches: a line that merely starts like an error ("error: …", "ERROR …", `level=error`).
+// None of them proves the job failed (a step may tolerate a failing command); GitHub's step conclusion does.
+// Stack-trace lines after an exception are marked as such so they stay together and visible.
 // The raw lines are never changed; classification only adds codes beside them.
 
 export const LINE_KINDS = [
@@ -19,6 +26,8 @@ export const LINE_KINDS = [
   "warning", // `##[warning]` runner annotation
   "error-text", // text that looks like an error (pattern match only)
   "warning-text", // text that looks like a warning (pattern match only)
+  "error-signature", // a strong failure signature: an exception, error code, compiler diagnostic, …
+  "stack", // a stack-trace line belonging to an exception (frames, traceback header, cause, error properties)
   "notice", // `##[notice]` runner annotation
   "debug", // `##[debug]` runner message
   "command", // a step's `Run …` header, or a command an action echoed with `[command]`
@@ -37,6 +46,7 @@ export type LineKind = (typeof LINE_KINDS)[number];
 export const REASONS = [
   "no rule matched",
   "runner annotation ##[error]",
+  "runner annotation ##[error] that only reports the exit code",
   "runner annotation ##[warning]",
   "runner annotation ##[notice]",
   "runner message ##[debug]",
@@ -52,10 +62,23 @@ export const REASONS = [
   "output of a post-job (action cleanup) step",
   "output during job setup",
   "text pattern: test or build result",
-  "text pattern: test or build failure",
+  "failure signature: test or build tool failure report",
+  "failure signature: Node.js error with an error code",
+  "failure signature: named exception (…Error: / …Exception:)",
+  "failure signature: error message followed by a stack trace",
+  "failure signature: Python exception ending a traceback",
+  "failure signature: uncaught Java exception",
+  "failure signature: Go panic or fatal runtime error",
+  "failure signature: compiler or linter diagnostic",
+  "failure signature: shell command not found",
+  "failure signature: make target failed",
+  "failure signature: npm error",
+  "failure signature: fatal error reported by a tool (fatal: …)",
+  "stack trace: frame",
+  "stack trace: Python traceback header",
+  "stack trace: exception cause",
+  "stack trace: error properties",
   "text pattern: starts like an error message",
-  "text pattern: compiler or linter error",
-  "text pattern: exception or stack trace",
   "text pattern: structured log level error",
   "text pattern: starts like a warning message",
   "text pattern: compiler or linter warning",
@@ -73,8 +96,25 @@ const R = Object.fromEntries(REASONS.map((r, i) => [r, i])) as Record<Reason, nu
 
 export const kindOf = (code: number): LineKind => LINE_KINDS[code] ?? "output";
 export const reasonOf = (code: number): Reason => REASONS[code] ?? "no rule matched";
-const PROBLEM = new Set<number>([K.error, K.warning, K["error-text"], K["warning-text"], K.notice, K["test-failed"]]);
+const PROBLEM = new Set<number>([K.error, K.warning, K["error-text"], K["warning-text"], K["error-signature"], K.notice, K["test-failed"]]);
 export const isProblemKind = (code: number): boolean => PROBLEM.has(code);
+
+/** Evidence tiers, strongest first. */
+export const EVIDENCE = ["annotation", "signature", "test failure", "exit code", "text match"] as const;
+export type EvidenceTier = (typeof EVIDENCE)[number];
+const EXIT_ONLY = R["runner annotation ##[error] that only reports the exit code"];
+/**
+ * How strong a line is as failure evidence: 0 a specific `##[error]` annotation, 1 a failure signature, 2 a test or
+ * build failure report, 3 an annotation that only reports the exit code (the cause is usually above it), 4 a text
+ * match. -1: not error evidence.
+ */
+export function evidenceRank(kind: number, reason: number): number {
+  if (kind === K.error) return reason === EXIT_ONLY ? 3 : 0;
+  if (kind === K["error-signature"]) return 1;
+  if (kind === K["test-failed"]) return 2;
+  if (kind === K["error-text"]) return 4;
+  return -1;
+}
 
 /** A `##[group]` … `##[endgroup]` section. Lines are 0-based; `end` is the `##[endgroup]` line. */
 export type LogGroup = { start: number; end: number; name: string };
@@ -118,16 +158,16 @@ const USES_HEADER = /^Run (?:[\w.-]+\/[\w./-]+@\S+|\.\/\S+|docker:\/\/\S+)$/;
 
 type Pattern = [RegExp, Reason];
 const TEST_FAILED: Pattern[] = [
-  [/^(?:FAILED|ERROR) [\w./-]+::\S+/, "text pattern: test or build failure"], // pytest short summary
-  [/^[\w./-]+::\S+ (?:FAILED|ERROR)\b/, "text pattern: test or build failure"], // pytest -v
-  [/^=+ .*\b\d+ (?:failed|errors?)\b.*=+$/, "text pattern: test or build failure"], // pytest summary
-  [/^\s*FAIL\s+\S+/, "text pattern: test or build failure"], // jest file / go package
-  [/^\s*--- FAIL: /, "text pattern: test or build failure"], // go test
-  [/^\s*(?:Tests|Test Files|Test Suites):\s+.*\b[1-9]\d* failed\b/, "text pattern: test or build failure"], // jest, vitest
-  [/Tests run: \d+, Failures: (?:[1-9]\d*, Errors: \d+|\d+, Errors: [1-9]\d*)/, "text pattern: test or build failure"], // maven, junit
-  [/\bBUILD FAIL(?:URE|ED)\b/, "text pattern: test or build failure"], // maven, gradle
-  [/^Failed!\s+-\s+Failed:\s+[1-9]/, "text pattern: test or build failure"], // dotnet test
-  [/^Found [1-9]\d* errors?\b/, "text pattern: test or build failure"], // tsc
+  [/^(?:FAILED|ERROR) [\w./-]+::\S+/, "failure signature: test or build tool failure report"], // pytest short summary
+  [/^[\w./-]+::\S+ (?:FAILED|ERROR)\b/, "failure signature: test or build tool failure report"], // pytest -v
+  [/^=+ .*\b\d+ (?:failed|errors?)\b.*=+$/, "failure signature: test or build tool failure report"], // pytest summary
+  [/^\s*FAIL\s+\S+/, "failure signature: test or build tool failure report"], // jest file / go package
+  [/^\s*--- FAIL: /, "failure signature: test or build tool failure report"], // go test
+  [/^\s*(?:Tests|Test Files|Test Suites):\s+.*\b[1-9]\d* failed\b/, "failure signature: test or build tool failure report"], // jest, vitest
+  [/Tests run: \d+, Failures: (?:[1-9]\d*, Errors: \d+|\d+, Errors: [1-9]\d*)/, "failure signature: test or build tool failure report"], // maven, junit
+  [/\bBUILD FAIL(?:URE|ED)\b/, "failure signature: test or build tool failure report"], // maven, gradle
+  [/^Failed!\s+-\s+Failed:\s+[1-9]/, "failure signature: test or build tool failure report"], // dotnet test
+  [/^Found [1-9]\d* errors?\b/, "failure signature: test or build tool failure report"], // tsc
 ];
 const TEST: Pattern[] = [
   [/^[\w./-]+::\S+ (?:PASSED|SKIPPED|XFAIL|XPASS)\b/, "text pattern: test or build result"],
@@ -142,14 +182,32 @@ const TEST: Pattern[] = [
   [/^Passed!\s+-\s+Failed:\s+0/, "text pattern: test or build result"],
   [/^\s*[✓✔] /, "text pattern: test or build result"],
 ];
+// Formats a tool prints when something failed. Anchored, so prose that mentions an error does not match.
+const SIGNATURE: Pattern[] = [
+  [/^\s*(?:Uncaught\s+)?(?:[A-Z]\w*)?Error \[[A-Z][A-Z0-9_]+\]: \S/, "failure signature: Node.js error with an error code"], // Error [ERR_MODULE_NOT_FOUND]: …
+  [/^Exception in thread "[^"]*" [\w$.]+/, "failure signature: uncaught Java exception"],
+  [/^\s*(?:Uncaught\s+)?(?:[\w$]+\.)*[A-Z]\w*(?:Error|Exception)(?::\s+\S|$)/, "failure signature: named exception (…Error: / …Exception:)"], // TypeError: …, java.lang.IllegalStateException: …
+  [/^panic: |^fatal error: /, "failure signature: Go panic or fatal runtime error"],
+  [/:\d+(?::\d+)?: (?:fatal )?error:|\berror (?:TS|CS)\d+:|\berror\[E\d+\]|^\s+\d+:\d+\s+error\s+\S/, "failure signature: compiler or linter diagnostic"],
+  [/^(?:\S+: )?(?:line \d+: )?\S+: command not found$/, "failure signature: shell command not found"],
+  [/^make(?:\[\d+\])?: \*\*\* .*(?:Error \d+|Stop\.)$/, "failure signature: make target failed"],
+  [/^npm (?:ERR!|error) /, "failure signature: npm error"],
+  [/^fatal: \S/, "failure signature: fatal error reported by a tool (fatal: …)"],
+];
 const ERROR_TEXT: Pattern[] = [
-  [/^\s*(?:error|ERROR|Error)(?:\[[\w-]+\])?(?:\s*:|!)/, "text pattern: starts like an error message"],
-  [/^\s*(?:fatal|FATAL)(?:\s*:|!)/, "text pattern: starts like an error message"],
-  [/^npm ERR! |^\[ERROR\] /, "text pattern: starts like an error message"],
-  [/:\d+(?::\d+)?: (?:fatal )?error:|\berror (?:TS|CS)\d+:|\berror\[E\d+\]/, "text pattern: compiler or linter error"],
-  [/^\s*Traceback \(most recent call last\):|^\s*(?:[\w$]+\.)*[A-Z]\w*(?:Error|Exception)(?::\s|$)|^panic: /, "text pattern: exception or stack trace"],
+  [/^\s*(?:error|ERROR|Error)(?:\s*\[[\w-]+\])?(?:\s*:|!)/, "text pattern: starts like an error message"],
+  [/^\s*(?:FATAL|Fatal)(?:\s*:|!)/, "text pattern: starts like an error message"],
+  [/^\[ERROR\] /, "text pattern: starts like an error message"],
   [/\blevel=(?:error|fatal)\b|"level"\s*:\s*"(?:error|fatal)"/, "text pattern: structured log level error"],
 ];
+// Stack traces. A frame line only counts after an exception or another frame, or as the start of one.
+const FRAME = /^\s+at (?:async )?\S.*(?:\)|:\d+(?::\d+)?)\s*\{?$|^\s+\.\.\. \d+ (?:more|common frames omitted)$/;
+const CAUSE = /^\s*(?:Caused by: |\[cause\]: )\S/;
+const TRACEBACK = /^\s*Traceback \(most recent call last\):$/;
+/** A line that an immediately following stack trace confirms as an exception message. */
+const EXCEPTION_LIKE = /^\s*(?:Uncaught\s+)?[\w$.]*(?:Error|Exception)\b/;
+const MAX_TRACE_LOOKBACK = 10;
+const MAX_PROPS = 100;
 const WARNING_TEXT: Pattern[] = [
   [/^\s*(?:warning|WARNING|Warning|WARN)(?:\[[\w-]+\])?(?:\s*:|!)/, "text pattern: starts like a warning message"],
   [/^npm WARN |^\[WARNING\] /, "text pattern: starts like a warning message"],
@@ -193,6 +251,10 @@ export class LineClassifier {
   private completeStep = false;
   private prevText: string | null = null;
   private runLength = 0;
+  private trace: "none" | "python" | "frames" | "props" = "none";
+  private propsLines = 0;
+  /** The last line that a following stack trace would confirm as an exception message, or -1. */
+  private candidate = -1;
 
   push(raw: string): void {
     const n = this.count++;
@@ -204,8 +266,9 @@ export class LineClassifier {
     this.reasons[n] = R[reason];
     this.folds[n] = fold;
     this.counts[K[kind]]!++;
+    if (kind !== "stack" && (kind === "error-text" || EXCEPTION_LIKE.test(text))) this.candidate = n;
     if (this.group && n > this.group.start) {
-      if (isProblemKind(K[kind])) this.group.problem = true;
+      if (isProblemKind(K[kind]) || kind === "stack") this.group.problem = true;
       else if (this.group.run ? kind === "script" || kind === "settings" : fold === FOLD.none) this.group.pending.push(n);
     }
     this.repeat(n, text, kind);
@@ -214,13 +277,18 @@ export class LineClassifier {
   private classify(n: number, text: string, coloured: string): [LineKind, Reason, number] {
     if (text.startsWith("##[")) {
       const marker = this.marker(n, text);
-      if (marker) return marker;
+      if (marker) {
+        this.trace = "none";
+        return marker;
+      }
     }
     const g = this.group;
     if (g?.run && g.echo !== "none") {
       const echo = this.echo(g, text, coloured);
       if (echo) return echo;
     }
+    const traced = this.stackTrace(n, text);
+    if (traced) return traced;
     if (!g) {
       if (text === "Post job cleanup.") {
         this.postStep = true;
@@ -238,6 +306,8 @@ export class LineClassifier {
     if (reason) return ["test-failed", reason, FOLD.none];
     reason = first(TEST, text);
     if (reason) return ["test", reason, FOLD.none];
+    reason = first(SIGNATURE, text);
+    if (reason) return ["error-signature", reason, FOLD.none];
     reason = first(ERROR_TEXT, text);
     if (reason) return ["error-text", reason, FOLD.none];
     reason = first(WARNING_TEXT, text);
@@ -271,13 +341,58 @@ export class LineClassifier {
       else this.malformed++;
       return ["control", "runner control marker", FOLD.control];
     }
-    if (text.startsWith("##[error]")) return ["error", "runner annotation ##[error]", FOLD.none];
+    if (text.startsWith("##[error]")) return ["error", /^##\[error\]Process completed with exit code \d+\.?\s*$/.test(text) ? "runner annotation ##[error] that only reports the exit code" : "runner annotation ##[error]", FOLD.none];
     if (text.startsWith("##[warning]")) return ["warning", "runner annotation ##[warning]", FOLD.none];
     if (text.startsWith("##[notice]")) return ["notice", "runner annotation ##[notice]", FOLD.none];
     if (text.startsWith("##[debug]")) return ["debug", "runner message ##[debug]", FOLD.none];
     if (text.startsWith("##[command]")) return ["command", "command echoed by an action ([command] prefix)", FOLD.none];
     if (/^##\[(?:start-action|end-action|add-matcher|remove-matcher)\b/.test(text)) return ["control", "runner control marker", FOLD.control];
     return undefined;
+  }
+
+  /** Stack-trace lines: a Python traceback up to its exception line, or JS/JVM frames, causes and error properties. */
+  private stackTrace(n: number, text: string): [LineKind, Reason, number] | undefined {
+    if (this.trace === "python") {
+      if (/^\s/.test(text)) return ["stack", "stack trace: frame", FOLD.none];
+      if (text === "") return undefined;
+      this.trace = "none";
+      return ["error-signature", "failure signature: Python exception ending a traceback", FOLD.none];
+    }
+    if (this.trace === "props") {
+      if (++this.propsLines <= MAX_PROPS) {
+        if (/^\s*\}\s*$/.test(text)) this.trace = "none";
+        return ["stack", "stack trace: error properties", FOLD.none];
+      }
+      this.trace = "none";
+    }
+    if (TRACEBACK.test(text)) {
+      this.trace = "python";
+      return ["stack", "stack trace: Python traceback header", FOLD.none];
+    }
+    if (FRAME.test(text)) {
+      if (this.trace !== "frames") this.confirmException(n);
+      this.trace = text.trimEnd().endsWith("{") ? "props" : "frames";
+      this.propsLines = 0;
+      return ["stack", "stack trace: frame", FOLD.none];
+    }
+    if (this.trace === "frames" && CAUSE.test(text)) return ["stack", "stack trace: exception cause", FOLD.none];
+    this.trace = "none";
+    return undefined;
+  }
+
+  /** A stack trace starts: the error message just above it (within a few lines) is an exception, not just text. */
+  private confirmException(n: number): void {
+    const p = this.candidate;
+    this.candidate = -1;
+    if (p < 0 || n - p > MAX_TRACE_LOOKBACK) return;
+    const old = this.kinds[p]!;
+    if (old !== K["error-text"] && old !== K.output && old !== K["action-output"]) return;
+    this.counts[old]!--;
+    this.kinds[p] = K["error-signature"];
+    this.reasons[p] = R["failure signature: error message followed by a stack trace"];
+    this.counts[K["error-signature"]]!++;
+    this.folds[p] = FOLD.none;
+    if (this.group && p > this.group.start) this.group.problem = true;
   }
 
   /** The runner's echo inside `##[group]Run …`: script lines (in its highlight colour), then shell/with/env. */

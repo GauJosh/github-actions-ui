@@ -41,7 +41,7 @@ describe("line classification", () => {
 
   it("separates explicit annotations from text that merely looks like an error or warning", () => {
     expect(kind(52)).toBe("error");
-    expect(reasonOf(c.reasons[52]!)).toBe("runner annotation ##[error]");
+    expect(reasonOf(c.reasons[52]!)).toBe("runner annotation ##[error] that only reports the exit code");
     expect(kind(51)).toBe("warning");
     expect(kind(48)).toBe("error-text");
     expect(reasonOf(c.reasons[48]!)).toMatch(/^text pattern/);
