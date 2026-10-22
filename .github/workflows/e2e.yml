@@ -30,7 +30,7 @@ jobs:
       # Builds a fixture-enabled test build and serves it with the production CSP. No request reaches GitHub.
       - run: npm run e2e
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results
           path: test-results/
