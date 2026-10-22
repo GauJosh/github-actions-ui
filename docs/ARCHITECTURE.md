@@ -500,6 +500,31 @@ Fixtures come from a **fetch script pinned to an immutable commit SHA**. Each do
 - **Synthetic enterprise logs** are generated in the runner's format (`##[group]Run …`, start-action/end-action around local composite actions). Rollback jobs emulate an older runner without those markers, so they show the approximate state.
 - **Known gap.** "Set up job" begins at the first line, but lines that a real runner prints between steps (for example "Prepare all required actions" before a local action) fall in the preceding step.
 
+### 11.5 Implementation notes: run insights (for review)
+
+Everything here is computed in the browser from data the run view already loads: run, jobs, workflow tree and graph. There are no new API calls, dependencies or storage. The code is in `src/domain/insights/` and three UI pieces: `RunStats`, `Timeline` and `SourceExplorer`.
+
+- **Durations.**
+  - A job's duration is `completed_at − started_at`. Queue time (`created_at → started_at`) is separate.
+  - A job without both timestamps has no duration; it is never treated as zero.
+  - Skipped jobs are not timed, even though GitHub gives them timestamps.
+  - **Duration** is the wall clock from the first job start to the last job completion, labelled "so far" while jobs are still running.
+  - **Job time** is the sum of job durations, i.e. machine time.
+  - **Critical path** is the longest chain of job durations through `needs`. It excludes waiting between jobs, and is unavailable (with the reason) without a workflow file, without dependencies, while jobs run, or when a job on the path has no timestamps.
+- **Statistics** show counts by result, the slowest and fastest timed jobs (linked to their details), and the deployments in this run. Nothing is historical: one run is not a success rate.
+- **Timeline** (`?view=timeline`).
+  - Bars come from real timestamps on a shared axis that ends at the latest reported time, never "now". A running job is drawn open-ended and marked as running.
+  - Jobs with no bar (skipped, not started, no timestamps) are listed with the reason.
+  - Rows are grouped by the release overview's phases, else by top-level call. Rows are windowed for large runs.
+  - Selecting a job marks the jobs it needs and the jobs that need it. The job then opens in the existing details, step and log views.
+- **Workflow source** (`?view=source`).
+  - It shows the resolved workflow tree, built by the existing loader and `resolveCall`: each file's path, revision and how the revision was chosen, plus the reason a file was not read.
+  - For each job it shows declared `needs`, `if`, `environment`, `uses` and the inputs passed.
+  - The link to what ran comes only from the execution graph's match. Repeated calls keep their call path.
+  - Inputs show their provenance (literal or runtime expression). Values that reference `secrets.*` or `github.token`, or whose input name suggests a credential, are redacted. File text is not shown; each file links to GitHub at its revision.
+- **DORA groundwork.** `deploymentsOf` records each environment a run deployed to, with outcome, times and provenance. It only counts jobs with their own `environment:`, declared or from an input, never inferred.
+  - Deployment frequency, lead time, change failure rate and time to restore need a population of runs and explicit definitions first: which workflows and environments count as production, what a change is (commit, PR, merge), what a failure is (a failed deployment, a rollback, an incident), and what a recovery is. These are not computed from one run.
+
 ## 12. Open risks (not validated)
 
 | Risk | Current state | Mitigation or plan |

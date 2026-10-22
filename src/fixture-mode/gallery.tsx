@@ -2,7 +2,7 @@
 // scenarios and their run variants. Variants are separate, fixed synthetic runs: choosing one changes what
 // is displayed, never any real workflow.
 import { useQuery } from "@tanstack/react-query";
-import { routeToHash } from "../domain/run-url";
+import { routeToHash, type RunView } from "../domain/run-url";
 import type { RunRef } from "../domain/types";
 
 type GalleryRun = { runId: number; variant: string; label: string; status: string; conclusion: string | null };
@@ -69,7 +69,7 @@ export function DemoGallery() {
 }
 
 /** Shows which demo scenario and variant is open, with the sibling variants one click away. */
-export function GalleryStrip({ run, view }: { run: RunRef; view?: "graph" }) {
+export function GalleryStrip({ run, view }: { run: RunRef; view?: RunView }) {
   const gallery = useGallery();
   const g = gallery.data;
   if (!g || run.owner !== g.owner || run.repo !== g.repo) return null;

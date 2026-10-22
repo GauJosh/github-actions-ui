@@ -167,8 +167,12 @@ test("Python, Java, shell and test failures are signatures; heuristics are marke
   // Badges keep the tiers apart.
   await page.getByRole("tab", { name: "Errors & warnings" }).click();
   await page.getByLabel("Context lines").selectOption("0");
-  const badges = await page.locator(".row[data-line] .kbadge").evaluateAll((els) => els.map((e) => e.getAttribute("data-badge")));
-  expect(badges).toEqual(expect.arrayContaining(["signature", "text"]));
+  // Rows are virtualised: collect the badges at the top and at the bottom of the view.
+  const collect = () => page.locator(".row[data-line] .kbadge").evaluateAll((els) => els.map((e) => e.getAttribute("data-badge")));
+  await expect.poll(collect).toContain("signature");
+  const top = await collect();
+  await page.getByTestId("log-view").evaluate((el) => (el.scrollTop = el.scrollHeight));
+  await expect.poll(async () => [...top, ...(await collect())]).toEqual(expect.arrayContaining(["signature", "text"]));
   const prose = 15 + SIGNATURE_CASES.slice(0, -1).reduce((s, c) => s + c.lines.length, 0);
   for (let line = prose; line < prose + SIGNATURE_CASES.at(-1)!.lines.length; line++) await expect(row(page, line)).toHaveCount(0);
 });

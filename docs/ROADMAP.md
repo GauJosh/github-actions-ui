@@ -16,7 +16,8 @@
   - **Nested reusable-workflow hierarchy** (requested 2026-10-20 after the first work trial): implemented and pushed (ARCHITECTURE §11.3).
   - **Essential logs and log exploration** (requested 2026-10-20): display modes, conservative classification, quick filters, search and failure-investigation controls (ARCHITECTURE §8, log display modes). Pushed.
   - **Failure detection and step-first logs** (requested 2026-10-21 after a work trial missed a Node.js failure): evidence tiers with failure signatures and stack traces, step headings with collapse, the failure evidence panel, scope and error navigation (ARCHITECTURE §8, error evidence tiers). Pushed.
-  - **Environment grouping and grouped graph layout** (requested 2026-10-21 after promotion checks were grouped under DEV): environment provenance, "between" groups for promotion gates, and one column per environment in the execution graph (ARCHITECTURE §11.3, environment evidence).
+  - **Environment grouping and grouped graph layout** (requested 2026-10-21 after promotion checks were grouped under DEV): environment provenance, same-name job matching, and one column per environment in the execution graph (ARCHITECTURE §11.3, environment evidence). Pushed.
+  - **Run insights** (requested 2026-10-21): run statistics, execution timeline, workflow source explorer and per-run deployment records as DORA groundwork (ARCHITECTURE §11.5). Implemented locally, not committed. Historical metrics need the definitions listed there first.
   - M2's other log-exploration items (ANSI, groups, scaled scrolling, the worker cache) are still open. Q2 and Q10 remain open.
 - Commits and pushes each need approval.
 

@@ -10,6 +10,10 @@ import type { Environment } from "../../app/environment";
 import { calledWorkflowGraph, durationMs, type GraphNode } from "../../domain/graph/build";
 import { treeAt } from "../../domain/graph/hierarchy";
 import { layoutGraph } from "../../domain/graph/layout";
+import { deploymentsOf } from "../../domain/insights/deployments";
+import { buildSourceTree } from "../../domain/insights/source";
+import { computeRunStats } from "../../domain/insights/stats";
+import { buildTimeline } from "../../domain/insights/timeline";
 import { buildOverview, gatesFor, type ReleaseOverview as Overview } from "../../domain/phases/phases";
 import { routeToHash, type Route } from "../../domain/run-url";
 import type { Job, Run, RunRef } from "../../domain/types";
@@ -26,6 +30,9 @@ import { JobDetails } from "./JobDetails";
 import { JobList } from "./JobList";
 import { PhaseDetail } from "./PhaseDetail";
 import { ReleaseOverview } from "./ReleaseOverview";
+import { RunStats } from "./RunStats";
+import { SourceExplorer } from "./SourceExplorer";
+import { Timeline } from "./Timeline";
 
 type Props = { env: Environment; run: RunRef; route: Route };
 
@@ -93,7 +100,20 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     for (const k of release.unassignedKeys) m.set(k, "Other jobs");
     return m;
   }, [release]);
-  const view: "overview" | "graph" = route.view === "graph" || (overview && !release) ? "graph" : "overview";
+  const view: "overview" | "graph" | "timeline" | "source" = route.view ?? (overview && !release ? "graph" : "overview");
+
+  // Run insights: statistics (available as soon as jobs load; the critical path needs the graph), the timeline
+  // and the workflow source tree, all from data already loaded for the run.
+  const stats = useMemo(() => (jobs.data ? computeRunStats(jobs.data, graph) : null), [jobs.data, graph]);
+  const deployments = useMemo(() => (graph && run.data ? deploymentsOf(run.data, graph, release) : undefined), [graph, run.data, release]);
+  const timeline = useMemo(() => (jobs.data && view === "timeline" ? buildTimeline(jobs.data, graph, release?.phases) : null), [jobs.data, graph, release, view]);
+  const source = useMemo(() => {
+    if (view !== "source" || !run.data || definition.isPending || treePending) return null;
+    const result = definition.data;
+    if (!result || !("definition" in result))
+      return buildSourceTree({ definition: null, unavailable: result?.unavailableReason ?? "The workflow file could not be loaded.", calls: new Map() }, graph);
+    return buildSourceTree(hierarchy.data?.tree ?? { file: rootFile(ref, run.data, result), definition: result.definition, calls: new Map() }, graph);
+  }, [view, run.data, definition.data, definition.isPending, treePending, hierarchy.data, graph, ref]);
 
   const selectedJob = jobs.data?.find((j) => j.id === jobId);
   const selectedNode = graph?.nodes.find((n) => (selectedJob ? n.members.some((m) => m.job.id === selectedJob.id) : n.key === nodeKey));
@@ -173,6 +193,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     <div className="explorer">
       {__FIXTURE_MODE__ && env.mode === "fixtures" && <GalleryStrip run={ref} view={route.view} />}
       <RunHeader run={r} runRef={ref} jobs={jobs.data} onRefresh={refresh} refreshing={run.isFetching || jobs.isFetching} />
+      {jobs.isSuccess && jobs.data.length > 0 && <RunStats stats={stats} deployments={deployments} graphPending={!graph} onSelectJob={(job) => selectJob(job)} />}
 
       <div className="view-switch" role="tablist" aria-label="Run views">
         <button
@@ -187,6 +208,12 @@ export function RunExplorer({ env, run: ref, route }: Props) {
         <button role="tab" aria-selected={view === "graph"} onClick={() => go({ view: "graph", phase: undefined, call: undefined, jobId: selectedJob?.id, ...logPlace })}>
           Execution graph (all jobs)
         </button>
+        <button role="tab" aria-selected={view === "timeline"} onClick={() => go({ view: "timeline", phase: undefined, call: undefined, jobId: selectedJob?.id, ...logPlace })}>
+          Timeline
+        </button>
+        <button role="tab" aria-selected={view === "source"} onClick={() => go({ view: "source", phase: undefined, call: undefined, jobId: selectedJob?.id, ...logPlace })}>
+          Workflow source
+        </button>
         {overview && "unavailable" in overview && (
           <span className="muted" data-testid="overview-unavailable">
             Release overview unavailable: {overview.unavailable}
@@ -194,8 +221,30 @@ export function RunExplorer({ env, run: ref, route }: Props) {
         )}
       </div>
 
-      <section className="panel graph-panel" aria-label={view === "overview" ? "Release overview" : "Execution graph"} id="graph">
-        {loadingState ? (
+      <section className="panel graph-panel" aria-label={view === "overview" ? "Release overview" : view === "timeline" ? "Timeline" : view === "source" ? "Workflow source" : "Execution graph"} id="graph">
+        {view === "timeline" && jobs.isSuccess && timeline && jobs.data.length > 0 ? (
+          <>
+            <header className="panel-head">
+              <h3>Timeline</h3>
+              {loadingState && <span className="muted">{loadingState} Grouping and dependencies appear when it is done.</span>}
+            </header>
+            <Timeline model={timeline} selectedJobId={selectedJob?.id} onSelectJob={(job) => selectJob(job)} />
+          </>
+        ) : view === "source" && source ? (
+          <>
+            <header className="panel-head">
+              <h3>Workflow source</h3>
+            </header>
+            <SourceExplorer
+              root={source}
+              onShowNode={(k) => {
+                const n = graph?.nodes.find((x) => x.key === k);
+                if (n) selectNode(n);
+                window.setTimeout(() => document.getElementById("job-details")?.scrollIntoView({ block: "start" }), 50);
+              }}
+            />
+          </>
+        ) : loadingState ? (
           <p className="state">{loadingState}</p>
         ) : jobs.isError ? (
           <ErrorState error={jobs.error} onRetry={() => void jobs.refetch()} />
@@ -290,7 +339,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
       {selectedJob && log && (
         <div className="log-wrap">
           <a href="#graph" className="back-to-graph" onClick={(e) => (e.preventDefault(), document.getElementById("graph")?.scrollIntoView())}>
-            ↑ Back to the {view === "overview" ? "release overview" : "graph"}
+            ↑ Back to the {view === "overview" ? "release overview" : view === "timeline" ? "timeline" : view === "source" ? "workflow source" : "graph"}
           </a>
           <LogPanel env={env} jobRef={{ ...ref, jobId: selectedJob.id }} job={selectedJob} line={line} step={step} links={logLinks} />
         </div>

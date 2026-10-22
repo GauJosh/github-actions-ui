@@ -29,7 +29,7 @@ export function parseRepo(input: string): RepoRef | null {
  * In-app location, kept in the URL fragment. It never contains credentials.
  * - `#/` repositories
  * - `#/repos/OWNER/REPO?status=…&branch=…&event=…&workflow=…` the run list
- * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph]` a run:
+ * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph|timeline|source]` a run:
  *   its selected phase, an opened reusable-workflow call, a selected job, its log opened at a step or a line, and
  *   the raw graph view
  */
@@ -44,8 +44,11 @@ export type Route = {
   step?: number;
   log?: boolean;
   line?: number;
-  view?: "graph";
+  view?: RunView;
 };
+
+/** A run's views besides the default release overview. */
+export type RunView = "graph" | "timeline" | "source";
 
 export function routeToHash(route: Route): string {
   if (route.run) {
@@ -61,7 +64,7 @@ export function routeToHash(route: Route): string {
       if (route.line !== undefined) hash += `/L${route.line}`;
       else if (route.log && route.step === undefined) hash += "/log";
     }
-    return route.view === "graph" ? `${hash}?view=graph` : hash;
+    return route.view ? `${hash}?view=${route.view}` : hash;
   }
   if (route.repo) {
     const query = new URLSearchParams();
@@ -78,7 +81,7 @@ export function routeToHash(route: Route): string {
 
 const SEGMENT = "[A-Za-z0-9_.%:-]+";
 const RUN_HASH = new RegExp(
-  `^#/runs/(${NAME})/(${NAME})/(\\d+)(?:/phases/(${SEGMENT})(?:/calls/(${SEGMENT}))?)?(?:/jobs/(\\d+)(?:/steps/(\\d+))?(?:/(log)|/L(\\d+))?)?(?:\\?view=(graph))?$`,
+  `^#/runs/(${NAME})/(${NAME})/(\\d+)(?:/phases/(${SEGMENT})(?:/calls/(${SEGMENT}))?)?(?:/jobs/(\\d+)(?:/steps/(\\d+))?(?:/(log)|/L(\\d+))?)?(?:\\?view=(graph|timeline|source))?$`,
 );
 const REPO_HASH = new RegExp(`^#/repos/(${NAME})/(${NAME})(?:\\?(.*))?$`);
 
@@ -98,7 +101,7 @@ export function parseHash(hash: string): Route {
       route.line = Number(m[9]);
       route.log = true;
     }
-    if (m[10]) route.view = "graph";
+    if (m[10]) route.view = m[10] as RunView;
     return route;
   }
   m = REPO_HASH.exec(hash);
