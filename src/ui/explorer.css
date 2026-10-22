@@ -401,8 +401,61 @@ code {
 .graph-viewport.expanded {
   height: 72vh;
 }
-.graph-viewport:active {
+.graph-viewport.panning,
+.graph-viewport.panning .gnode-main {
   cursor: grabbing;
+  user-select: none;
+}
+.graph-stage.glide {
+  transition: transform 0.18s ease-out;
+}
+/* Pan buttons: a small pad in the corner of the graph, above the drawing. */
+.pan-pad {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(3, 28px);
+  grid-template-rows: repeat(3, 28px);
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+  cursor: default;
+}
+.pan-pad button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 6px;
+}
+.pan-up {
+  grid-area: 1 / 2;
+}
+.pan-left {
+  grid-area: 2 / 1;
+}
+.pan-fit {
+  grid-area: 2 / 2;
+  color: var(--muted);
+}
+.pan-right {
+  grid-area: 2 / 3;
+}
+.pan-down {
+  grid-area: 3 / 2;
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-stage.glide {
+    transition: none;
+  }
 }
 .graph-stage {
   position: absolute;

@@ -406,10 +406,10 @@ function scenarios(): ScenarioSpec[] {
 // The readiness check: no environment of its own; the environment arrives as `target`.
 const SHARED_READY: WorkflowSpec = {
   repo: SHARED_REPO,
-  path: ".github/workflows/verify-ready.yml",
-  name: "[synthetic] Verify ready",
+  path: ".github/workflows/release-check.yml",
+  name: "[synthetic] Release check",
   on: "workflow_call",
-  jobs: [{ id: "verify", name: "Verify Ready to Implement", steps: [{ name: "Check change record", uses: "acme-org/action-change-check@v1" }] }],
+  jobs: [{ id: "verify", name: "Release check", steps: [{ name: "Run release checks", uses: "acme-org/action-release-check@v1" }] }],
 };
 
 /** DEV, then a readiness check and a deployment (with validation and rollback) for PROD and, in parallel, PROD-DR. */
@@ -429,7 +429,7 @@ function promoteCd(): WorkflowSpec {
   };
   envBlock("dev", []);
   for (const env of ["prod", "prod-dr"] as Env[]) {
-    jobs.push({ id: `ready-${env}`, name: `${env.toUpperCase()} readiness`, needs: ["dev-validation"], uses: "./.github/workflows/verify-ready.yml", with: { target: env } });
+    jobs.push({ id: `ready-${env}`, name: `${env.toUpperCase()} readiness`, needs: ["dev-validation"], uses: "./.github/workflows/release-check.yml", with: { target: env } });
     envBlock(env, [`ready-${env}`]);
   }
   return { repo: SHARED_REPO, path: ".github/workflows/cd-promote.yml", name: "[synthetic] Shared promotion CD", on: "workflow_call", jobs };

@@ -1,0 +1,628 @@
+/* Theme: the app's design tokens, light and dark, and the shared component styling. Loaded last, so these
+   tokens replace the earlier files' values. Dark follows the system unless the header's theme switch picks one
+   (data-theme on <html>, kept for this page view only).
+
+   Semantic status tokens, used everywhere a state is shown (always with an icon or text, never colour alone):
+   --pass success · --fail failure · --run running · --warn waiting/approval · --skip skipped · --recover rollback. */
+
+:root,
+:root[data-theme="light"] {
+  --paper: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f2f3f6;
+  --ink: #14171f;
+  --muted: #5a606f;
+  --line: #e2e4ea;
+  --line-strong: #cdd1da;
+  --accent: #5b4fd8;
+  --accent-ink: #ffffff;
+  --accent-soft: rgb(91 79 216 / 0.09);
+  --banner-ink: #ffffff;
+  --pass: #12775a;
+  --fail: #c42f3e;
+  --warn: #9e5c00;
+  --run: #2d5fc4;
+  --queue: #8a5900;
+  --skip: #737989;
+  --recover: #b0560e;
+  --block: #737989;
+  --hl: #fff1b8;
+  --elev: 0 1px 2px rgb(16 19 31 / 0.05), 0 8px 24px -12px rgb(16 19 31 / 0.16);
+  --sans: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0c0e13;
+    --surface: #13161d;
+    --surface-2: #191d26;
+    --ink: #e6e8ee;
+    --muted: #979dac;
+    --line: #252a35;
+    --line-strong: #353b49;
+    --accent: #968cf6;
+    --accent-ink: #0c0e13;
+    --accent-soft: rgb(150 140 246 / 0.12);
+    --banner-ink: #1c1400;
+    --pass: #3ebf8e;
+    --fail: #f16678;
+    --warn: #e3a742;
+    --run: #6f9cf3;
+    --queue: #e3a742;
+    --skip: #868c9b;
+    --recover: #ec9150;
+    --block: #868c9b;
+    --hl: #3a3314;
+    --elev: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -16px rgb(0 0 0 / 0.7);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0c0e13;
+  --surface: #13161d;
+  --surface-2: #191d26;
+  --ink: #e6e8ee;
+  --muted: #979dac;
+  --line: #252a35;
+  --line-strong: #353b49;
+  --accent: #968cf6;
+  --accent-ink: #0c0e13;
+  --accent-soft: rgb(150 140 246 / 0.12);
+  --banner-ink: #1c1400;
+  --pass: #3ebf8e;
+  --fail: #f16678;
+  --warn: #e3a742;
+  --run: #6f9cf3;
+  --queue: #e3a742;
+  --skip: #868c9b;
+  --recover: #ec9150;
+  --block: #868c9b;
+  --hl: #3a3314;
+  --elev: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 32px -16px rgb(0 0 0 / 0.7);
+  color-scheme: dark;
+}
+
+/* ---- base ---- */
+body {
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+a {
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+button,
+.btn {
+  border-radius: 7px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+button:hover:not(:disabled),
+.btn:hover {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--ink) 25%, var(--line-strong));
+}
+button:focus-visible,
+.btn:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input:focus-visible,
+select:focus-visible {
+  outline-offset: 0;
+  border-color: var(--accent);
+}
+.btn-primary,
+button.btn-primary,
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.btn-primary:hover,
+button.btn-primary:hover:not(:disabled),
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, var(--ink));
+  border-color: transparent;
+}
+input,
+select {
+  border-radius: 7px;
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+.panel {
+  border-radius: 10px;
+  border-color: var(--line);
+  box-shadow: none;
+}
+.chip,
+.tag {
+  border-radius: 999px;
+  padding: 0 8px;
+  border-color: var(--line);
+}
+
+/* ---- header (not sticky: the run page needs its vertical space) ---- */
+.banner {
+  border-image: linear-gradient(var(--warn), var(--warn)) fill 0 / 0 / 0 100vmax;
+  color: var(--banner-ink);
+  font-weight: 600;
+}
+.banner a {
+  color: var(--banner-ink);
+}
+.topbar {
+  margin: 0 0 8px;
+  padding: 12px 0;
+  border-image: linear-gradient(transparent calc(100% - 1px), var(--line) 0) fill 0 / 0 / 0 100vmax;
+}
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.brand {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+.brand a {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 650;
+}
+.mark-bg {
+  fill: var(--accent);
+}
+.mark-line {
+  stroke: var(--accent-ink);
+}
+.mark-node {
+  fill: var(--accent-ink);
+}
+.mark-node.dim {
+  opacity: 0.55;
+}
+.theme-toggle {
+  font-size: 12.5px;
+  color: var(--muted);
+  border-color: var(--line);
+  background: transparent;
+}
+
+/* ---- run and repository pages ---- */
+.page-head h2 {
+  font-size: 21px;
+  letter-spacing: -0.015em;
+  font-weight: 650;
+}
+.crumbs {
+  font-size: 13px;
+}
+/* Tabs: an underline, not folder tabs. */
+.view-switch {
+  gap: 2px;
+  margin-top: 14px;
+}
+.view-switch [role="tab"] {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 12px;
+  margin-bottom: -1px;
+  color: var(--muted);
+}
+.view-switch [role="tab"]:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ink);
+  border-bottom-color: var(--line-strong);
+}
+.view-switch [role="tab"][aria-selected="true"] {
+  background: transparent;
+  color: var(--ink);
+  border-bottom: 2px solid var(--accent);
+}
+.run-stats {
+  background: transparent;
+}
+.home-intro {
+  grid-column: 1 / -1;
+  margin: 12px 0 0;
+}
+.home-intro h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  font-weight: 650;
+}
+.home-intro p {
+  margin: 2px 0 0;
+}
+.repo-link {
+  border-radius: 8px;
+}
+.gallery-card {
+  border-radius: 10px;
+  border-color: var(--line);
+  transition: border-color 0.12s;
+}
+.gallery-card:hover {
+  border-color: var(--line-strong);
+}
+
+/* ---- execution graph: the focal point ---- */
+.graph-viewport {
+  border-radius: 10px;
+  background-color: var(--paper);
+  background-image: radial-gradient(color-mix(in srgb, var(--line-strong) 70%, transparent) 1px, transparent 1px);
+}
+.gnode {
+  border-color: var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.gnode.s-failure,
+.gnode.s-timed_out {
+  background: color-mix(in srgb, var(--fail) 7%, var(--surface));
+  border-color: color-mix(in srgb, var(--fail) 45%, var(--line-strong));
+}
+/* Selected: a solid accent ring. Related (needs / needed by): a thin accent outline. */
+.gnode.selected {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 6px 18px -8px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.gnode.related {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.gnode.dimmed {
+  opacity: 0.4;
+}
+.edge {
+  stroke: color-mix(in srgb, var(--muted) 85%, var(--paper));
+}
+.edge.hl {
+  stroke: var(--accent);
+}
+.group-frame {
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.group-frame span {
+  font: 600 11px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.edge-mode button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong));
+  color: var(--ink);
+}
+
+/* ---- landing ---- */
+.landing {
+  display: grid;
+  gap: 56px;
+  padding: 24px 0 8px;
+}
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 48px;
+  align-items: center;
+  padding-top: 24px;
+}
+.hero .eyebrow {
+  margin: 0;
+  font: 600 12px var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.hero-title {
+  margin: 14px 0 14px;
+  font-size: clamp(32px, 4.4vw, 50px);
+  line-height: 1.06;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  text-wrap: balance;
+}
+.hero-accent {
+  color: var(--accent);
+}
+.hero-lede {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 16.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.hero-cta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 28px 0 18px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 18px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.trust {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.trust li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.trust svg {
+  color: var(--pass);
+}
+
+/* The showcase: a real screenshot of the app (synthetic demo data). */
+.showcase {
+  margin: 0;
+}
+.showcase-frame {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--elev);
+  overflow: hidden;
+}
+.showcase-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  font: 12px var(--mono);
+  color: var(--muted);
+}
+.showcase-bar .tag {
+  margin-left: auto;
+}
+.showcase img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 660px;
+  object-fit: contain;
+  background: var(--paper);
+}
+.showcase .shot-dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .showcase .shot-light {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .showcase .shot-dark {
+    display: block;
+  }
+}
+:root[data-theme="dark"] .showcase .shot-light {
+  display: none;
+}
+:root[data-theme="dark"] .showcase .shot-dark {
+  display: block;
+}
+.showcase figcaption {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.section-title {
+  margin: 0 0 18px;
+  font: 600 12px var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.benefits {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 32px;
+}
+.benefit h3 {
+  margin: 12px 0 6px;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.benefit p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.feature-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.also {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 40px;
+  list-style: none;
+  padding: 18px 0 0;
+  margin: 26px 0 0;
+  border-top: 1px solid var(--line);
+}
+.also li {
+  color: var(--muted);
+}
+.also b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.landing-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+  scroll-margin-top: 16px;
+}
+.connect {
+  margin: 0;
+  padding: 22px 24px;
+  border-color: var(--line-strong);
+  box-shadow: var(--elev);
+}
+.connect h2 {
+  font-size: 18px;
+  letter-spacing: -0.01em;
+}
+.connect form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 10px;
+  margin: 16px 0 8px;
+}
+.connect form label {
+  grid-column: 1 / -1;
+  font-weight: 600;
+  font-size: 13px;
+}
+.connect form input {
+  padding: 9px 12px;
+  font-family: var(--mono);
+}
+.connect form button {
+  padding: 9px 20px;
+}
+.connect-notes {
+  padding-left: 18px;
+  margin: 10px 0 4px;
+}
+.token-steps {
+  padding-top: 4px;
+}
+.token-steps h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.token-steps ol {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 10px;
+}
+.token-steps li::marker {
+  color: var(--muted);
+  font-weight: 600;
+}
+.perm-list {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 4px;
+  flex-wrap: wrap;
+}
+.perm-list span {
+  font: 600 12px var(--mono);
+  padding: 1px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+}
+.perm-list span::after {
+  content: " · read";
+  font-weight: 400;
+  color: var(--muted);
+}
+.landing-foot {
+  padding: 18px 0 4px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .landing {
+    gap: 40px;
+  }
+  .hero {
+    padding-top: 8px;
+  }
+  .hero,
+  .benefits,
+  .landing-grid,
+  .also {
+    grid-template-columns: 1fr;
+  }
+  .benefits {
+    gap: 24px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
+/* ---- refinements for long titles, timeline groups and the demo gallery ---- */
+/* The status badge stays at the start of the title's first line, however long the title wraps. */
+.run-head h2 {
+  display: block;
+  line-height: 1.3;
+}
+.run-head h2 .sbadge {
+  margin-right: 10px;
+  vertical-align: 3px;
+}
+.tl-group {
+  font: 600 11px var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.gallery-card ul a {
+  color: var(--ink);
+  text-decoration-color: var(--line-strong);
+}
+.gallery-card ul a:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+.gallery-outcome {
+  white-space: nowrap;
+}

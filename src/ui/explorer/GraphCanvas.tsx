@@ -1,5 +1,6 @@
 // The execution graph: HTML job nodes (real buttons, so keyboard and screen readers work) over an SVG edge
-// layer. Pan by dragging or with arrow keys; zoom with Ctrl/⌘+scroll, +/− or the toolbar; fit to view.
+// layer. Pan by dragging (anywhere, including on a job), with the arrow keys or the pan buttons; zoom with
+// Ctrl/⌘+scroll, +/− or the toolbar; fit to view.
 //
 // Readability rules:
 // - opens at a readable zoom (fit only if the whole graph stays readable), centred on the failure;
@@ -137,7 +138,13 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
   const [view, setView] = useState<View>({ x: 0, y: 0, k: 1 });
   const [expanded, setExpanded] = useState(false);
   const [allEdges, setAllEdges] = useState(false);
-  const drag = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  /** `moved`: the pointer travelled far enough that this is a pan, not a click on a job. */
+  const drag = useRef<{ x: number; y: number; vx: number; vy: number; moved: boolean } | null>(null);
+  const [panning, setPanning] = useState(false);
+  /** The last pointer sequence was a pan: the click that ends it must not select a job. */
+  const dragged = useRef(false);
+  /** Button and key panning glide; dragging follows the pointer directly. */
+  const [glide, setGlide] = useState(false);
 
   const callable = Boolean(annotations?.onOpenCall);
   const layout: Layout & { groups?: GroupFrame[] } = useMemo(() => {
@@ -197,6 +204,7 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
+      setGlide(false);
       const r = el.getBoundingClientRect();
       zoomAt(Math.exp(-e.deltaY * 0.002), e.clientX - r.left, e.clientY - r.top);
     };
@@ -228,14 +236,27 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
     if (selectedKey) reveal(selectedKey);
   }
 
+  /** One pan step: a fifth of the visible area, between 60 and 180 px, so each press moves a predictable amount. */
+  const pan = useCallback(
+    (dirX: number, dirY: number) => {
+      const step = (n: number) => Math.round(Math.min(180, Math.max(60, n * 0.2)));
+      setGlide(true);
+      setView((v) => ({ ...v, x: v.x - dirX * step(size.w), y: v.y - dirY * step(size.h) }));
+    },
+    [size],
+  );
+  const endDrag = () => {
+    if (drag.current?.moved) dragged.current = true;
+    drag.current = null;
+    setPanning(false);
+  };
+
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.target !== viewport.current) return;
-    const step = 60;
-    const moves: Record<string, [number, number]> = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
+    const moves: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (moves[e.key]) {
       e.preventDefault();
-      const [dx, dy] = moves[e.key]!;
-      setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
+      pan(...moves[e.key]!);
     } else if (e.key === "+" || e.key === "=") zoomAt(1.2, size.w / 2, size.h / 2);
     else if (e.key === "-") zoomAt(1 / 1.2, size.w / 2, size.h / 2);
     else if (e.key === "0") fit();
@@ -297,11 +318,11 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
           </button>
         </span>
         {large && size.w > 0 && <Minimap graph={graph} layout={layout} view={view} size={size} onMove={(x, y) => setView((v) => ({ ...v, x: size.w / 2 - x * v.k, y: size.h / 2 - y * v.k }))} />}
-        <span className="muted hint">Drag to pan · Ctrl/⌘+scroll to zoom</span>
+        <span className="muted hint">Drag, arrow keys or the arrows to pan · Ctrl/⌘+scroll to zoom</span>
       </div>
       <div
         ref={viewport}
-        className={`graph-viewport${expanded ? " expanded" : ""}${selectedKey && !allEdges ? " focusing" : ""}`}
+        className={`graph-viewport${expanded ? " expanded" : ""}${selectedKey && !allEdges ? " focusing" : ""}${panning ? " panning" : ""}`}
         style={maxHeight ? { height: maxHeight } : undefined}
         tabIndex={0}
         role="group"
@@ -310,18 +331,38 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
         data-edge-mode={allEdges ? "all" : "focused"}
         onKeyDown={onKeyDown}
         onPointerDown={(e) => {
-          if ((e.target as HTMLElement).closest(".gnode")) return;
-          drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-          e.currentTarget.setPointerCapture(e.pointerId);
+          // Primary button only; the pan buttons are not a drag surface.
+          if (e.button !== 0 || (e.target as HTMLElement).closest(".pan-pad")) return;
+          dragged.current = false;
+          drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, moved: false };
+          setGlide(false);
         }}
         onPointerMove={(e) => {
           const d = drag.current;
-          if (d) setView((v) => ({ ...v, x: d.vx + e.clientX - d.x, y: d.vy + e.clientY - d.y }));
+          if (!d) return;
+          // The button was released somewhere the viewport did not hear about: end the drag instead of following the pointer.
+          if (e.buttons === 0) return endDrag();
+          if (!d.moved) {
+            if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) < 4) return;
+            // A real drag (it may have started on a job): capture the pointer so the pan survives leaving the viewport.
+            d.moved = true;
+            setPanning(true);
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }
+          setView((v) => ({ ...v, x: d.vx + e.clientX - d.x, y: d.vy + e.clientY - d.y }));
         }}
-        onPointerUp={() => (drag.current = null)}
-        onPointerCancel={() => (drag.current = null)}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
+        onClickCapture={(e) => {
+          // A drag that started on a job must not also select it.
+          if (dragged.current) {
+            dragged.current = false;
+            e.stopPropagation();
+          }
+        }}
       >
-        <div className="graph-stage" style={{ width: layout.width, height: layout.height, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
+        <div className={`graph-stage${glide ? " glide" : ""}`} style={{ width: layout.width, height: layout.height, transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
           {layout.columns.map((c) => (
             <div key={c.label} className="column-band" style={{ left: c.start, width: c.size, height: layout.height }} data-testid="column-band">
               <span>{c.label}</span>
@@ -388,6 +429,23 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
               annotations={annotations}
             />
           ))}
+        </div>
+        <div className="pan-pad" role="group" aria-label="Pan the graph">
+          <button type="button" className="pan-up" onClick={() => pan(0, -1)} aria-label="Pan up" title="Pan up">
+            ↑
+          </button>
+          <button type="button" className="pan-left" onClick={() => pan(-1, 0)} aria-label="Pan left" title="Pan left">
+            ←
+          </button>
+          <button type="button" className="pan-fit" onClick={fit} aria-label="Show the whole graph" title="Show the whole graph">
+            ⤢
+          </button>
+          <button type="button" className="pan-right" onClick={() => pan(1, 0)} aria-label="Pan right" title="Pan right">
+            →
+          </button>
+          <button type="button" className="pan-down" onClick={() => pan(0, 1)} aria-label="Pan down" title="Pan down">
+            ↓
+          </button>
         </div>
       </div>
     </div>

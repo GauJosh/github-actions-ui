@@ -7,6 +7,7 @@ import "./ui/styles.css";
 import "./ui/explorer.css";
 import "./ui/release.css";
 import "./ui/focus.css";
+import "./ui/theme.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {

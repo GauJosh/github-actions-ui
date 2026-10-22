@@ -12,6 +12,10 @@ import { relativeTime } from "./format";
 export function Home({ env }: { env: Environment }) {
   return (
     <div className="home">
+      <header className="home-intro">
+        <h2>Pick a repository</h2>
+        <p className="muted">Browse its workflow runs, or jump straight to a run from its GitHub URL.</p>
+      </header>
       {__FIXTURE_MODE__ && env.mode === "fixtures" && (
         <div className="home-gallery">
           <DemoGallery />
