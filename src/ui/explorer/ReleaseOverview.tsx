@@ -110,6 +110,8 @@ export function ReleaseOverview({ overview, graph, selectedPhase, onSelectPhase,
           const next = phases[i + 1];
           const duration = durationMs(p.startedAt, p.completedAt);
           const firstFailed = p.failedKeys.map((k) => nodes.get(k)!).find(Boolean);
+          // "deploy · STAGE-DR", without repeating an environment that is already the phase's name.
+          const kind = p.kind === "deploy" && p.environment && p.environment.toLowerCase() !== p.name.toLowerCase() ? `deploy · ${p.environment}` : p.kind;
           return (
             <li key={p.id} className="phase-cell">
               <button
@@ -121,7 +123,9 @@ export function ReleaseOverview({ overview, graph, selectedPhase, onSelectPhase,
               >
                 <span className="pc-head">
                   <span className="pc-name">{p.name}</span>
-                  <span className="pc-kind">{p.kind === "deploy" && p.environment ? `deploy · ${p.environment}` : p.kind}</span>
+                  <span className="pc-kind" title={kind}>
+                    {kind}
+                  </span>
                 </span>
                 <PhaseBadge status={p.status} />
                 <ProgressBar phase={p} nodes={nodes} />
@@ -130,7 +134,11 @@ export function ReleaseOverview({ overview, graph, selectedPhase, onSelectPhase,
                   {duration !== undefined ? ` · ${formatDuration(duration)}` : ""}
                 </span>
                 {p.gate && <span className={`pc-line gate g-${p.gate.state}`}>{gateText(p.gate)}</span>}
-                {firstFailed && <span className="pc-line pc-failed">✕ {firstFailed.label}</span>}
+                {firstFailed && (
+                  <span className="pc-line pc-failed" title={firstFailed.label}>
+                    ✕ {firstFailed.label}
+                  </span>
+                )}
                 {p.recovery === "succeeded" && <span className="pc-line pc-recovery">↩ rollback succeeded</span>}
                 {p.recovery === "failed" && <span className="pc-line pc-failed">↩ rollback failed</span>}
                 {p.recovery === "running" && <span className="pc-line pc-recovery">↩ rolling back</span>}

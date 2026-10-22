@@ -126,11 +126,13 @@
   align-items: stretch;
   overflow-x: auto;
 }
+/* Cards share the width, but none is narrower than its phase name: a longer name (e.g. STAGE-DR) widens its card
+   instead of wrapping or overflowing, so every card's rows stay aligned. */
 .phase-cell {
   display: flex;
   align-items: center;
   flex: 1 1 0;
-  min-width: 176px;
+  min-width: min-content;
 }
 .phase-card {
   flex: 1;
@@ -146,7 +148,7 @@
   background: var(--surface);
   color: var(--ink);
   cursor: pointer;
-  min-width: 0;
+  min-width: 176px;
 }
 .phase-card:hover {
   background: var(--surface-2);
@@ -159,24 +161,30 @@
 .ps-not-started.phase-card {
   background-image: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--block) 8%, transparent) 8px 16px);
 }
+/* Name on its own line (never broken at a hyphen); the kind below it, cut with an ellipsis rather than widening
+   the card. Every card's header has the same two lines, so badges and bars line up across the rail. */
 .pc-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 6px;
+  display: grid;
+  gap: 1px;
 }
 .pc-name {
   font-weight: 700;
   font-size: 15px;
+  white-space: nowrap;
 }
 .pc-kind {
   font: 11px var(--mono);
   color: var(--muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  contain: inline-size;
 }
+/* Body lines wrap within the card and never set its width. */
 .pc-line {
   font-size: 12.5px;
   color: var(--muted);
+  contain: inline-size;
 }
 .pc-line.gate {
   font-weight: 600;
