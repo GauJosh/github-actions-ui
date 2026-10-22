@@ -1,14 +1,15 @@
 import type { RepoRef, RunFilters, RunRef } from "./types";
 
 const NAME = "[A-Za-z0-9_.-]+";
-const RUN_URL = new RegExp(`^https://github\\.com/(${NAME})/(${NAME})/actions/runs/(\\d+)(?:/job/(\\d+))?(?:/attempts/\\d+)?/?(?:[?#].*)?$`);
+const RUN_URL = new RegExp(`^https://github\\.com/(${NAME})/(${NAME})/actions/runs/(\\d+)(?:/job/(\\d+))?(?:/attempts/(\\d+))?/?(?:[?#].*)?$`);
 
-/** Parses a GitHub Actions run (or job) URL. Returns null for anything else. */
-export function parseRunUrl(input: string): (RunRef & { jobId?: number }) | null {
+/** Parses a GitHub Actions run (or job, or run attempt) URL. Returns null for anything else. */
+export function parseRunUrl(input: string): (RunRef & { jobId?: number; attempt?: number }) | null {
   const m = RUN_URL.exec(input.trim());
   if (!m) return null;
-  const ref: RunRef & { jobId?: number } = { owner: m[1]!, repo: m[2]!, runId: Number(m[3]) };
+  const ref: RunRef & { jobId?: number; attempt?: number } = { owner: m[1]!, repo: m[2]!, runId: Number(m[3]) };
   if (m[4]) ref.jobId = Number(m[4]);
+  if (m[5] && Number(m[5]) > 0) ref.attempt = Number(m[5]);
   return ref;
 }
 
@@ -29,9 +30,9 @@ export function parseRepo(input: string): RepoRef | null {
  * In-app location, kept in the URL fragment. It never contains credentials.
  * - `#/` repositories
  * - `#/repos/OWNER/REPO?status=…&branch=…&event=…&workflow=…` the run list
- * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph|timeline|source]` a run:
- *   its selected phase, an opened reusable-workflow call, a selected job, its log opened at a step or a line, and
- *   the raw graph view
+ * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph|timeline|source][&attempt=N]`
+ *   a run: its selected phase, an opened reusable-workflow call, a selected job, its log opened at a step or a
+ *   line, the view, and the run attempt (absent: the latest attempt)
  */
 export type Route = {
   repo?: RepoRef;
@@ -45,6 +46,8 @@ export type Route = {
   log?: boolean;
   line?: number;
   view?: RunView;
+  /** A run attempt (1-based). Absent: the run's latest attempt. */
+  attempt?: number;
 };
 
 /** A run's views besides the default release overview. */
@@ -64,7 +67,8 @@ export function routeToHash(route: Route): string {
       if (route.line !== undefined) hash += `/L${route.line}`;
       else if (route.log && route.step === undefined) hash += "/log";
     }
-    return route.view ? `${hash}?view=${route.view}` : hash;
+    const query = [route.view && `view=${route.view}`, route.attempt && `attempt=${route.attempt}`].filter(Boolean).join("&");
+    return query ? `${hash}?${query}` : hash;
   }
   if (route.repo) {
     const query = new URLSearchParams();
@@ -81,7 +85,7 @@ export function routeToHash(route: Route): string {
 
 const SEGMENT = "[A-Za-z0-9_.%:-]+";
 const RUN_HASH = new RegExp(
-  `^#/runs/(${NAME})/(${NAME})/(\\d+)(?:/phases/(${SEGMENT})(?:/calls/(${SEGMENT}))?)?(?:/jobs/(\\d+)(?:/steps/(\\d+))?(?:/(log)|/L(\\d+))?)?(?:\\?view=(graph|timeline|source))?$`,
+  `^#/runs/(${NAME})/(${NAME})/(\\d+)(?:/phases/(${SEGMENT})(?:/calls/(${SEGMENT}))?)?(?:/jobs/(\\d+)(?:/steps/(\\d+))?(?:/(log)|/L(\\d+))?)?(?:\\?(.*))?$`,
 );
 const REPO_HASH = new RegExp(`^#/repos/(${NAME})/(${NAME})(?:\\?(.*))?$`);
 
@@ -101,7 +105,11 @@ export function parseHash(hash: string): Route {
       route.line = Number(m[9]);
       route.log = true;
     }
-    if (m[10]) route.view = m[10] as RunView;
+    const q = new URLSearchParams(m[10] ?? "");
+    const view = q.get("view");
+    if (view === "graph" || view === "timeline" || view === "source") route.view = view;
+    const attempt = Number(q.get("attempt"));
+    if (Number.isInteger(attempt) && attempt > 0) route.attempt = attempt;
     return route;
   }
   m = REPO_HASH.exec(hash);

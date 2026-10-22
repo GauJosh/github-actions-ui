@@ -32,7 +32,8 @@ describe("synthetic scenarios", () => {
   it("CD: running, waiting and queued matrix legs, and a declared job not created yet", () => {
     const g = graphOf(990000102);
     expect(g.nodes.find((n) => n.yamlId === "deploy-prod")!.counts).toEqual({ in_progress: 1, waiting: 1, queued: 1 });
-    expect(g.nodes.find((n) => n.yamlId === "verify-prod")).toMatchObject({ declaredOnly: true, status: "not_run" });
+    expect(g.nodes.some((n) => n.yamlId === "verify-prod")).toBe(false);
+    expect(g.declared?.map((d) => d.id)).toEqual(["verify-prod"]);
     expect(g.edges.filter((e) => e.to === "def:deploy-staging").map((e) => e.from)).toEqual(["def:smoke-dev", "def:security-scan"]);
   });
 
@@ -65,6 +66,9 @@ describe("synthetic scenarios", () => {
   it("renamed: the unmatched job has no edges", () => {
     const g = graphOf(990000107);
     expect(g.nodes.find((n) => n.key.startsWith("job:"))!.label).toBe("compile");
-    expect(g.edges).toEqual([{ from: "def:build", to: "def:test" }]);
+    // `build` has no job in this run (it ran as "compile", which matches nothing), so `test`'s need is reported, not drawn.
+    expect(g.edges).toEqual([]);
+    expect(g.declared?.map((d) => d.id)).toEqual(["build"]);
+    expect(g.evidence.notes.join(" ")).toContain("Not drawn: `test` needs `build`");
   });
 });

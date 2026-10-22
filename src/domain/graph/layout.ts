@@ -383,12 +383,14 @@ export function layoutGrouped(nodes: LayoutNode[], edges: LayoutEdge[], options:
 
   // Each group on its own.
   const inner = new Map<string, Layout>();
+  const columnGroups = new Set<string>();
   for (const g of order) {
     const members = nodes.filter((n) => groupOf.get(n.key) === g).map((n) => ({ ...n, column: undefined, float: false }));
     const set = new Set(members.map((m) => m.key));
     const own = valid.filter((e) => set.has(e.from) && set.has(e.to));
     // Declared swimlanes (e.g. services) keep the left-to-right layout inside their group.
     const column = options.vertical && framed(g) && !members.some((m) => m.lane !== undefined);
+    if (column) columnGroups.add(g);
     inner.set(g, column ? layoutColumn(members, own) : layoutGraph(members, own, options));
   }
   const pad = (g: string) => (framed(g) ? FRAME_PAD : 0);
@@ -450,6 +452,21 @@ export function layoutGrouped(nodes: LayoutNode[], edges: LayoutEdge[], options:
 
   // Edges between groups: from the right side of one job to the left side of the other. With bundling, jobs in one
   // group that need exactly the same 2+ jobs elsewhere share a junction just before their group.
+  // In a column group, a job with other jobs to its right in the same row leaves from its bottom instead and runs
+  // below that row to the group's edge, so the edge is never drawn under a job it does not come from.
+  const exitOf = (k: string): { path: string; x: number; y: number } => {
+    const a = boxes.get(k)!;
+    const g = groupOf.get(k)!;
+    const right = { path: `M ${a.x + a.width} ${a.y + a.height / 2}`, x: a.x + a.width, y: a.y + a.height / 2 };
+    if (!columnGroups.has(g)) return right;
+    const row = [...boxes].filter(([o, b]) => o !== k && groupOf.get(o) === g && b.y < a.y + a.height && b.y + b.height > a.y);
+    if (!row.some(([, b]) => b.x >= a.x + a.width)) return right;
+    // Jobs further left run slightly lower, so edges from neighbours in one row stay apart.
+    const rank = row.filter(([, b]) => b.x + b.width <= a.x).length;
+    const frame = placed.get(g)!;
+    const [sx, sy, below, fx] = [a.x + a.width - 16, a.y + a.height, a.y + a.height + Math.max(4, FRAME_PAD - 4 - 4 * rank), frame.x + frame.w];
+    return { path: `M ${sx} ${sy} L ${sx} ${below - 6} Q ${sx} ${below}, ${sx + 6} ${below} L ${fx} ${below}`, x: fx, y: below };
+  };
   const crossPreds = new Map<string, string[]>();
   for (const e of valid) if (groupOf.get(e.from) !== groupOf.get(e.to)) (crossPreds.get(e.to) ?? crossPreds.set(e.to, []).get(e.to)!).push(e.from);
   const viaJunction = new Set<string>();
@@ -471,10 +488,9 @@ export function layoutGrouped(nodes: LayoutNode[], edges: LayoutEdge[], options:
       const j: Junction = { id, x: frame.x - GROUP_GAP_X / 2, y: ys.reduce((s, v) => s + v, 0) / ys.length, sources, targets };
       junctions.push(j);
       for (const s of sources) {
-        const a = boxes.get(s)!;
-        const [x1, y1] = [a.x + a.width, a.y + a.height / 2];
+        const { path, x: x1, y: y1 } = exitOf(s);
         const d = Math.max(24, (j.x - x1) / 2);
-        laid.push({ from: s, to: `junction:${id}`, junction: id, path: `M ${x1} ${y1} C ${x1 + d} ${y1}, ${j.x - d} ${j.y}, ${j.x} ${j.y}` });
+        laid.push({ from: s, to: `junction:${id}`, junction: id, path: `${path} C ${x1 + d} ${y1}, ${j.x - d} ${j.y}, ${j.x} ${j.y}` });
         for (const t of targets) viaJunction.add(`${s}\u0000${t}`);
       }
       for (const t of targets) {
@@ -487,11 +503,11 @@ export function layoutGrouped(nodes: LayoutNode[], edges: LayoutEdge[], options:
   }
   for (const e of valid) {
     if (groupOf.get(e.from) === groupOf.get(e.to) || viaJunction.has(`${e.from}\u0000${e.to}`)) continue;
-    const a = boxes.get(e.from)!;
     const b = boxes.get(e.to)!;
-    const [x1, y1, x2, y2] = [a.x + a.width, a.y + a.height / 2, b.x, b.y + b.height / 2];
+    const { path, x: x1, y: y1 } = exitOf(e.from);
+    const [x2, y2] = [b.x, b.y + b.height / 2];
     const d = Math.max(24, (x2 - x1) / 2);
-    laid.push({ from: e.from, to: e.to, path: `M ${x1} ${y1} C ${x1 + d} ${y1}, ${x2 - d} ${y2}, ${x2} ${y2}` });
+    laid.push({ from: e.from, to: e.to, path: `${path} C ${x1 + d} ${y1}, ${x2 - d} ${y2}, ${x2} ${y2}` });
   }
 
   const right = Math.max(PAD, ...[...placed.values()].map((p) => p.x + p.w));

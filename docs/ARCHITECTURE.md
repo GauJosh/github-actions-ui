@@ -525,6 +525,34 @@ Everything here is computed in the browser from data the run view already loads:
 - **DORA groundwork.** `deploymentsOf` records each environment a run deployed to, with outcome, times and provenance. It only counts jobs with their own `environment:`, declared or from an input, never inferred.
   - Deployment frequency, lead time, change failure rate and time to restore need a population of runs and explicit definitions first: which workflows and environments count as production, what a change is (commit, PR, merge), what a failure is (a failed deployment, a rollback, an incident), and what a recovery is. These are not computed from one run.
 
+### 11.6 Implementation notes: declared-only jobs and run attempts (for review)
+
+**Execution nodes are the jobs GitHub reported, and nothing else.**
+- *Root cause of the "ci · no job in this run" node.* `buildRunGraph` turned every job definition into a node, including definitions with no matching job (`declaredOnly`). The release overview then grouped jobs before the first deployment by top-level call, so a declared `ci` call produced a "ci" node and a "ci" frame.
+- *Now.* Definitions with no job in the run (attempt) are kept apart as `RunGraph.declared` (definition context), at every level of the reusable-workflow hierarchy.
+  - They are listed under the graph's evidence as "declared, with no job in this run", and the Workflow source view marks them. They are never drawn as jobs and never become phases or phase members.
+  - A `needs` on such a job is reported ("Not drawn: `deploy` needs `ci`…") and is not drawn or bridged to the job's own needs.
+  - With a phase file, a declared job still belongs to its declared phase. This applies only to phase-level dependencies and to a "declared, no job yet" count, so a phase waiting for its first job reads "not started", "pending" or "blocked", never "succeeded".
+- *No assumed stages.* Phases come from the run's own environments (or a phase file); the code has no stage names. The "Before deployment" frame exists only when such jobs ran.
+- *Layout.* In a column group, an edge to another group whose job has neighbours to its right now leaves from below the row, so it is never drawn under a job it does not come from.
+
+**Run attempts.**
+- *API.*
+  - `GET /repos/{o}/{r}/actions/runs/{id}/attempts/{n}` returns one attempt of the run, with its own `run_attempt`, status, conclusion and `run_started_at`.
+  - `GET …/attempts/{n}/jobs` lists that attempt's jobs. They have their own ids and `run_attempt`, verified against the real two-attempt fixture run.
+  - Job logs are per job id (`/actions/jobs/{id}/logs`), so each attempt's logs are separate.
+  - Approval history (`/runs/{id}/approvals`) is per run, not per attempt.
+- *UI.*
+  - The route keeps `?attempt=N`; with no parameter the run shows its latest attempt, loaded with `filter=latest` as before.
+  - A run with several attempts shows a row of attempts with their results.
+  - For an earlier attempt, a banner says which attempt is shown, and every view (graph, overview, timeline, statistics, job details, logs) is built from that attempt's jobs. Approvals are used only for the latest attempt.
+  - Switching attempts keeps the view and drops the selected job and log, because job ids differ between attempts.
+  - A failed or missing attempt is reported, with the attempts that exist. No other attempt's data is shown in its place.
+  - A job that GitHub lists in an attempt but reports with another `run_attempt` (e.g. not re-run) is called out.
+- *Not verified against live GitHub.*
+  - What `…/attempts/{n}/jobs` lists after "Re-run failed jobs": whether jobs that were not re-run are included, and with which `run_attempt`. The UI labels such jobs rather than assuming either way.
+  - Whether `referenced_workflows` can differ between attempts. The workflow tree is loaded per attempt to be safe.
+
 ## 12. Open risks (not validated)
 
 | Risk | Current state | Mitigation or plan |

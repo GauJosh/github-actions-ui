@@ -65,7 +65,6 @@ export function orderedMembers(node: GraphNode) {
 }
 
 export function countsText(node: GraphNode): string {
-  if (node.declaredOnly) return "no job in this run";
   if (node.members.length === 1) return STATUS_LABEL[node.status];
   return Object.entries(node.counts)
     .map(([s, n]) => `${n} ${STATUS_LABEL[s as keyof typeof STATUS_LABEL].toLowerCase()}`)
@@ -455,7 +454,6 @@ function NodeView({
     selected ? "selected" : "",
     related ? "related" : "",
     dimmed ? "dimmed" : "",
-    node.declaredOnly ? "declared" : "",
     node.source === "job-name" && graph.evidence.kind === "workflow-file" ? "unmatched" : "",
   ].join(" ");
   return (
@@ -489,7 +487,6 @@ function NodeView({
             </li>
           ))}
           {members.length > MAX_MEMBERS && <li className="more">+{members.length - MAX_MEMBERS} more (see job list)</li>}
-          {members.length === 0 && <li className="more">no job in this run</li>}
         </ul>
       )}
       {node.kind === "reusable" && annotations?.onOpenCall && (

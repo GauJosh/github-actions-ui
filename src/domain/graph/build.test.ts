@@ -124,12 +124,48 @@ describe("no invented structure", () => {
 
   it("jobs that do not match the workflow file get no edges", () => {
     const g = buildRunGraph([job(1, "build"), job(2, "renamed-test")], def([d("build"), d("test", { needs: ["build"] })]), FILE);
-    expect(g.edges).toEqual([{ from: "def:build", to: "def:test" }]);
+    // `test` has no job in this run (it was renamed), so there is no node to draw an edge to.
+    expect(g.edges).toEqual([]);
     const unmatched = g.nodes.find((n) => n.key === "job:2")!;
     expect(unmatched.source).toBe("job-name");
     expect(g.edges.some((e) => e.from === "job:2" || e.to === "job:2")).toBe(false);
-    expect(g.nodes.find((n) => n.yamlId === "test")!.declaredOnly).toBe(true);
+    expect(g.nodes.some((n) => n.yamlId === "test")).toBe(false);
+    expect(g.declared).toEqual([{ key: "def:test", id: "test", label: "test", needs: ["build"] }]);
     expect(g.evidence.notes.join(" ")).toMatch(/1 job could not be matched/);
+  });
+
+  it("declared jobs with no job in the run are context, not nodes: no synthetic CI stage, no invented or bridged edges", () => {
+    // A deployment-only run: the workflow declares a CI call and a build job, GitHub reported neither.
+    const definition = def([
+      d("ci", { uses: "./.github/workflows/ci.yml" }),
+      d("package", { needs: ["ci"] }),
+      d("deploy", { needs: ["package"], environment: "eu" }),
+      d("verify", { needs: ["deploy"] }),
+    ]);
+    const g = buildRunGraph([job(1, "deploy"), job(2, "verify")], definition, FILE);
+    expect(g.nodes.map((n) => n.key)).toEqual(["def:deploy", "def:verify"]);
+    expect(g.edges).toEqual([{ from: "def:deploy", to: "def:verify" }]);
+    expect(g.declared!.map((x) => x.key)).toEqual(["def:ci", "def:package"]);
+    expect(g.declared![0]).toMatchObject({ uses: "./.github/workflows/ci.yml" });
+    // `deploy` needs `package`, which needs `ci`: neither ran, so nothing upstream of deploy is drawn or bridged.
+    expect(g.evidence.notes.join(" ")).toContain("Not drawn: `deploy` needs `package`");
+    expect(g.evidence.notes.join(" ")).toContain("2 jobs are declared in the workflow file but have no matching job in this run (`ci`, `package`)");
+    expect(g.evidence.kind === "workflow-file" && g.evidence.matchedJobs).toBe(2);
+  });
+
+  it("arbitrary job names and topologies: edges are exactly the `needs` between jobs that ran", () => {
+    const definition = def([
+      d("alpha"),
+      d("omega"),
+      d("zeta", { needs: ["alpha", "omega"] }),
+      d("kappa", { needs: ["alpha"] }),
+      d("final", { needs: ["zeta", "kappa"], hasIf: true }),
+    ]);
+    const names = ["omega", "alpha", "kappa", "zeta", "final"];
+    const g = buildRunGraph(names.map((n, i) => job(i + 1, n, n === "final" ? "skipped" : "success")), definition, FILE);
+    expect(g.declared).toBeUndefined();
+    expect(g.edges.map((e) => `${e.from}>${e.to}`).sort()).toEqual(["def:alpha>def:kappa", "def:alpha>def:zeta", "def:kappa>def:final", "def:omega>def:zeta", "def:zeta>def:final"]);
+    expect(g.nodes.find((n) => n.key === "def:final")!.status).toBe("skipped");
   });
 
   it("a `needs` on an undefined job draws no edge and says so", () => {

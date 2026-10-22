@@ -9,7 +9,8 @@ describe("parseRunUrl", () => {
       runId: 39366140909,
     });
     expect(parseRunUrl(" https://github.com/o/r/actions/runs/1/job/2?pr=3 ")).toEqual({ owner: "o", repo: "r", runId: 1, jobId: 2 });
-    expect(parseRunUrl("https://github.com/o/r/actions/runs/1/attempts/2")).toEqual({ owner: "o", repo: "r", runId: 1 });
+    expect(parseRunUrl("https://github.com/o/r/actions/runs/1/attempts/2")).toEqual({ owner: "o", repo: "r", runId: 1, attempt: 2 });
+    expect(parseRunUrl("https://github.com/o/r/actions/runs/1/attempts/0")).toEqual({ owner: "o", repo: "r", runId: 1 });
   });
 
   it("rejects other URLs", () => {
@@ -57,6 +58,17 @@ describe("hash routes", () => {
     expect(routeToHash(graph)).toBe("#/runs/o/r/1/jobs/9/steps/2?view=graph");
     expect(parseHash(routeToHash(graph))).toEqual(graph);
     expect(parseHash("#/runs/o/r/1/jobs/9/steps/x")).toEqual({});
+  });
+
+  it("round-trips a run attempt with and without a view; the latest attempt has no parameter", () => {
+    const run = { owner: "o", repo: "r", runId: 1 };
+    expect(routeToHash({ run, attempt: 2 })).toBe("#/runs/o/r/1?attempt=2");
+    expect(parseHash("#/runs/o/r/1?attempt=2")).toEqual({ run, attempt: 2 });
+    const both = { run, jobId: 9, log: true, view: "timeline" as const, attempt: 1 };
+    expect(routeToHash(both)).toBe("#/runs/o/r/1/jobs/9/log?view=timeline&attempt=1");
+    expect(parseHash(routeToHash(both))).toEqual(both);
+    expect(parseHash("#/runs/o/r/1?attempt=0")).toEqual({ run });
+    expect(parseHash("#/runs/o/r/1?attempt=x&view=bogus")).toEqual({ run });
   });
 
   it("round-trips the repository run list with its filters", () => {

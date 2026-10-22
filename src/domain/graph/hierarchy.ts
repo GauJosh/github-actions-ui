@@ -12,7 +12,7 @@
 // from that file's `needs:`. A caller-level `needs` (e.g. `cd` needs `ci`) is kept as its own kind of edge
 // (`via: "call"`), drawn from the last jobs of one call to the first jobs of the other.
 import type { Job, Run } from "../types";
-import { buildRunGraph, type GraphEdge, type GraphEvidence, type GraphNode, type NodeContext, type RunGraph, type WorkflowFileRef } from "./build";
+import { buildRunGraph, type DeclaredJob, type GraphEdge, type GraphEvidence, type GraphNode, type NodeContext, type RunGraph, type WorkflowFileRef } from "./build";
 import type { WorkflowDefinition, WorkflowJobDef } from "./workflow-definition";
 
 export type CallTarget = { kind: "local"; path: string } | { kind: "remote"; repo: string; path: string; ref: string };
@@ -102,7 +102,7 @@ const qualify = (key: string, path: string[]) => {
   return path.length && m ? `${m[1]}${path.join("/")}/${m[2]}` : key;
 };
 
-type Level = { nodes: GraphNode[]; edges: GraphEdge[]; notes: string[]; evidence: GraphEvidence; expanded: number; collapsed: number };
+type Level = { nodes: GraphNode[]; edges: GraphEdge[]; declared: DeclaredJob[]; notes: string[]; evidence: GraphEvidence; expanded: number; collapsed: number };
 const EMPTY: WorkflowTree = { definition: null, calls: new Map() };
 
 // Jobs are matched to each called file by their name relative to the call ("cd / DEV / Deploy" -> "Deploy");
@@ -124,6 +124,7 @@ function level(
   if (ctx && !def && jobs.length) notes.push(`${where}: ${tree.unavailable ?? "the called workflow was not read"} Its jobs are shown without dependencies.`);
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
+  const declared: DeclaredJob[] = (g.declared ?? []).map((d) => ({ ...d, key: qualify(d.key, path), ...(ctx ? { context: ctx } : {}) }));
   const expansions = new Map<string, { sources: string[]; sinks: string[] }>();
   let expanded = 0;
   let collapsed = 0;
@@ -178,6 +179,7 @@ function level(
     collapsed += sub.collapsed;
     nodes.push(...sub.nodes);
     edges.push(...sub.edges);
+    declared.push(...sub.declared);
     notes.push(...sub.notes);
     const to = new Set(sub.edges.map((e) => e.to));
     const from = new Set(sub.edges.map((e) => e.from));
@@ -191,7 +193,7 @@ function level(
     const tx = expansions.get(t);
     for (const a of fx?.sinks ?? [f]) for (const b of tx?.sources ?? [t]) edges.push({ from: a, to: b, ...(fx || tx ? { via: "call" as const } : {}) });
   }
-  return { nodes, edges, notes, evidence: g.evidence, expanded, collapsed };
+  return { nodes, edges, declared, notes, evidence: g.evidence, expanded, collapsed };
 }
 
 /** The run's execution graph across reusable-workflow calls (see the header for what is expanded and why). */
@@ -206,7 +208,7 @@ export function buildHierarchyGraph(jobs: Job[], tree: WorkflowTree, run?: Pick<
   }
   if (root.collapsed) notes.push(`${root.collapsed} reusable-workflow call${root.collapsed === 1 ? " is" : "s are"} shown as one node; open one to see its jobs and dependencies.`);
   notes.push(...root.notes);
-  return { nodes: root.nodes, edges: root.edges, evidence: { ...evidence, notes } };
+  return { nodes: root.nodes, edges: root.edges, evidence: { ...evidence, notes }, ...(root.declared.length && { declared: root.declared }) };
 }
 
 /** The top-level call a node belongs to (its own id for a call node at the top level). */

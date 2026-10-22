@@ -50,22 +50,21 @@ function ProgressBar({ phase, nodes }: { phase: Phase; nodes: Map<string, GraphN
   );
 }
 
-/** "3 succeeded · 1 failed · 2 skipped", counting jobs (and declared jobs that have not started). */
+/** "3 succeeded · 1 failed · 2 skipped", counting the jobs GitHub reported. */
 function breakdown(phase: Phase, nodes: Map<string, GraphNode>): string {
   const counts = new Map<string, number>();
   const add = (k: string) => counts.set(k, (counts.get(k) ?? 0) + 1);
   for (const key of phase.nodeKeys) {
     const node = nodes.get(key)!;
-    if (node.declaredOnly) add("not started");
     for (const m of node.members) {
       const s = jobStatus(m.job);
       add(s === "success" || s === "neutral" ? "succeeded" : s === "failure" || s === "timed_out" ? "failed" : s === "in_progress" || s === "queued" ? "running" : s === "waiting" ? "waiting" : s === "skipped" ? "skipped" : s);
     }
   }
-  return ["succeeded", "failed", "cancelled", "running", "waiting", "skipped", "not started"]
-    .filter((k) => counts.get(k))
-    .map((k) => `${counts.get(k)} ${k}`)
-    .join(" · ");
+  const reported = ["succeeded", "failed", "cancelled", "running", "waiting", "skipped"].filter((k) => counts.get(k)).map((k) => `${counts.get(k)} ${k}`);
+  // Declared in the phase file and the workflow, with no job in this run (yet): context, not jobs.
+  if (phase.declared) reported.push(`${phase.declared} declared, no job yet`);
+  return reported.join(" · ");
 }
 
 export function gateText(gate: NonNullable<Phase["gate"]>): string {

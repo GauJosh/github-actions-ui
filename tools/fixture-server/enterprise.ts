@@ -183,9 +183,17 @@ type Outcome = {
   approved?: Env[];
   rejected?: Env[];
 };
-/** Missing evidence to exercise the app's fallbacks: a reference GitHub did not resolve, a missing file, no access. */
-type Faults = { unreferenced?: string[]; missing?: string[]; forbidden?: boolean };
-type VariantSpec = { id: string; label: string; runId: number; ago: number; outcome: Outcome; event?: string; branch?: string; faults?: Faults };
+/**
+ * Missing evidence to exercise the app's fallbacks: a reference GitHub did not resolve, a missing file, no access.
+ * `omitJobs`: jobs (or whole calls, by display name) absent from the jobs API although the workflow declares them.
+ */
+type Faults = { unreferenced?: string[]; missing?: string[]; forbidden?: boolean; omitJobs?: string[] };
+/**
+ * An earlier attempt of the run (a full re-run, simulated like the latest one). `logsExpired`: its job logs answer
+ * 410 Gone; `jobsError`: its jobs endpoint fails with that HTTP status.
+ */
+type RetrySpec = { outcome: Outcome; logsExpired?: boolean; jobsError?: number };
+type VariantSpec = { id: string; label: string; runId: number; ago: number; outcome: Outcome; event?: string; branch?: string; faults?: Faults; retries?: RetrySpec[] };
 type ScenarioSpec = { id: string; title: string; description: string; main: WorkflowSpec; called: WorkflowSpec[]; phases: PhaseSpec[]; variants: VariantSpec[] };
 
 const ciCaller = (): { jobs: JobDef[]; phase: PhaseSpec } => ({
@@ -238,6 +246,30 @@ function scenarios(): ScenarioSpec[] {
         { id: "success", label: "Success", runId: 990002001, ago: 120, outcome: { approved: allApproved } },
         { id: "running", label: "Deploying to Test", runId: 990002002, ago: 6, outcome: { running: ["e2e-test"] } },
         { id: "dev-rolled-back", label: "Dev smoke failed · rolled back", runId: 990002003, ago: 80, outcome: { fail: { "smoke-dev": "Smoke tests" } } },
+        {
+          id: "rerun-succeeded",
+          label: "Failed, re-run succeeded (2 attempts)",
+          runId: 990002004,
+          ago: 100,
+          outcome: { approved: allApproved },
+          retries: [{ outcome: { fail: { "smoke-dev": "Smoke tests" } } }],
+        },
+        {
+          id: "third-attempt",
+          label: "Succeeded on attempt 3 (attempt 1 logs expired)",
+          runId: 990002005,
+          ago: 140,
+          outcome: { approved: allApproved },
+          retries: [{ outcome: { fail: { "smoke-dev": "Smoke tests" } }, logsExpired: true }, { outcome: { fail: { "e2e-test": "End-to-end tests" } } }],
+        },
+        {
+          id: "failed-every-attempt",
+          label: "Failed in all 3 attempts (attempt 1 jobs unavailable)",
+          runId: 990002006,
+          ago: 160,
+          outcome: { fail: { "e2e-test": "End-to-end tests" } },
+          retries: [{ outcome: { fail: { "smoke-dev": "Smoke tests" } }, jobsError: 500 }, { outcome: { fail: { "smoke-dev": "Smoke tests" } } }],
+        },
       ],
     },
     {
@@ -342,6 +374,31 @@ function scenarios(): ScenarioSpec[] {
         { id: "released", label: "Released to PROD and PROD-DR", runId: 990008001, ago: 35, outcome: { approved: ["prod", "prod-dr"] } },
         { id: "prod-dr-rolled-back", label: "PROD-DR validation failed · rolled back", runId: 990008002, ago: 25, outcome: { approved: ["prod", "prod-dr"], fail: { "cd / PROD-DR validation": "Validate release" } } },
       ],
+    },
+    {
+      id: "deploy-only",
+      title: "Deployment-only rollout (no CI job in the run)",
+      description:
+        "A rollout with unconventional environments (blue, canary-eu, live), two independent entry points and a parallel branch. The workflow declares a reusable CI call, but GitHub reports no job for it in this run.",
+      main: {
+        path: ".github/workflows/rollout.yml",
+        name: "[synthetic] Traffic rollout",
+        on: "workflow_dispatch",
+        jobs: [
+          { id: "ci", uses: "./.github/workflows/_ci.yml" },
+          { id: "prepare-config", name: "Prepare config", steps: [checkout, { name: "Render config", run: "./scripts/render-config.sh" }] },
+          { id: "fetch-artifact", name: "Fetch artifact", steps: [{ name: "Download artifact", uses: "acme-org/actions/fetch-artifact@v1" }] },
+          { id: "audit-log", name: "Audit log", steps: [{ name: "Record rollout", run: "./scripts/audit.sh" }] },
+          { id: "deploy-blue", name: "Deploy blue", needs: ["ci", "prepare-config", "fetch-artifact"], environment: "blue", steps: [{ name: "Deploy", uses: "./.github/actions/deploy-helm" }] },
+          { id: "canary-eu", name: "Canary EU", needs: ["fetch-artifact"], environment: "canary-eu", steps: [{ name: "Deploy canary", uses: "./.github/actions/deploy-helm" }] },
+          { id: "verify-blue", name: "Verify blue", needs: ["deploy-blue"], steps: [{ name: "Smoke tests", uses: "./.github/actions/smoke-test" }] },
+          { id: "shift-traffic", name: "Shift traffic", needs: ["verify-blue", "canary-eu"], environment: "live", steps: [{ name: "Shift traffic", run: "./scripts/shift.sh" }] },
+          { id: "notify", name: "Notify", needs: ["shift-traffic"], if: "always()", steps: [{ name: "Notify", uses: "acme-org/actions/notify-release@v2" }] },
+        ],
+      },
+      called: [REUSABLE_CI],
+      phases: [],
+      variants: [{ id: "ci-not-reported", label: "Rolled out · CI not in the run", runId: 990009001, ago: 15, outcome: {}, event: "workflow_dispatch", faults: { omitJobs: ["ci"] } }],
     },
   ];
 }
@@ -584,6 +641,15 @@ export type EnterpriseRun = {
   logs: Map<number, string>;
   approvals: unknown[];
   pending: unknown[];
+  /** Earlier attempts, oldest first (the run above is the latest). */
+  attempts?: EarlierAttempt[];
+};
+export type EarlierAttempt = {
+  run: EnterpriseRun["run"];
+  jobs: Record<string, unknown>[];
+  logs: Map<number, string>;
+  logsExpired?: boolean;
+  jobsError?: number;
 };
 
 function buildRun(s: ScenarioSpec, v: VariantSpec, workflowId: number): EnterpriseRun {
@@ -593,8 +659,9 @@ function buildRun(s: ScenarioSpec, v: VariantSpec, workflowId: number): Enterpri
   const headSha = hash(`${s.id}/${v.id}`);
   const jobs: Record<string, unknown>[] = [];
   const logs = new Map<number, string>();
+  const omitted = (name: string) => (v.faults?.omitJobs ?? []).some((o) => name === o || name.startsWith(`${o} / `));
   instances
-    .filter((inst) => inst.call && state.get(inst.apiName)!.conclusion === "skipped" && !state.get(inst.apiName)!.hidden)
+    .filter((inst) => inst.call && state.get(inst.apiName)!.conclusion === "skipped" && !state.get(inst.apiName)!.hidden && !omitted(inst.apiName))
     .forEach((inst, k) => {
       // GitHub reports a call that did not run as one job named after the call.
       const at = iso(base + (state.get(inst.apiName)!.start ?? 0));
@@ -618,7 +685,7 @@ function buildRun(s: ScenarioSpec, v: VariantSpec, workflowId: number): Enterpri
     });
   instances.filter((inst) => !inst.call).forEach((inst, i) => {
     const st = state.get(inst.apiName)!;
-    if (st.absent || st.hidden) return; // not created yet (upstream still running or waiting), or inside a skipped call
+    if (st.absent || st.hidden || omitted(inst.apiName)) return; // not created yet (upstream still running or waiting), inside a skipped call, or omitted
     const id = v.runId * 1000 + i + 1;
     const started = st.start !== undefined && st.status !== "waiting" ? iso(base + st.start) : null;
     const completed = st.end !== undefined ? iso(base + st.end) : null;
@@ -795,12 +862,50 @@ function buildRun(s: ScenarioSpec, v: VariantSpec, workflowId: number): Enterpri
   };
 }
 
+/**
+ * A run with earlier attempts: each attempt is a full re-run, simulated on its own (45 minutes apart), with its own
+ * job ids (`runId*1000 + 400 + 100*(attempt-1) + n`), logs and result. The latest attempt keeps the plain ids.
+ */
+function withAttempts(s: ScenarioSpec, v: VariantSpec, workflowId: number): EnterpriseRun {
+  const latest = buildRun(s, v, workflowId);
+  const retries = v.retries ?? [];
+  if (!retries.length) return latest;
+  if (retries.length > 4) throw new Error("at most 5 attempts per synthetic run");
+  const count = retries.length + 1;
+  const base = v.runId * 1000;
+  const attempts: EarlierAttempt[] = retries.map((r, i) => {
+    const n = i + 1;
+    const b = buildRun(s, { ...v, outcome: r.outcome, ago: v.ago + (count - n) * 45 }, workflowId);
+    const newId = (id: number) => {
+      const local = id - base;
+      const slot = local >= 900 ? 90 + (local - 900) : local;
+      if (slot >= 100) throw new Error("too many jobs for an earlier synthetic attempt");
+      return base + 400 + 100 * (n - 1) + slot;
+    };
+    const jobs = b.jobs.map((j) => {
+      const id = newId(j.id as number);
+      return { ...j, id, run_attempt: n, html_url: `${HTML}/actions/runs/${v.runId}/job/${id}` };
+    });
+    const logs = new Map([...b.logs].map(([id, text]) => [newId(id), text]));
+    const run: EnterpriseRun["run"] = { ...b.run, run_attempt: n, html_url: `${HTML}/actions/runs/${v.runId}` };
+    if (n > 1) run.previous_attempt_url = `/repos/${ENTERPRISE_FULL}/actions/runs/${v.runId}/attempts/${n - 1}`;
+    return { run, jobs, logs, ...(r.logsExpired && { logsExpired: true }), ...(r.jobsError && { jobsError: r.jobsError }) };
+  });
+  const created = attempts[0]!.run.created_at;
+  for (const a of attempts) a.run.created_at = created;
+  latest.run.created_at = created;
+  latest.run.run_attempt = count;
+  latest.run.previous_attempt_url = `/repos/${ENTERPRISE_FULL}/actions/runs/${v.runId}/attempts/${count - 1}`;
+  for (const j of latest.jobs) j.run_attempt = count;
+  return { ...latest, attempts };
+}
+
 export function enterpriseRuns(): EnterpriseRun[] {
   const workflowIds = new Map<string, number>();
   return scenarios().flatMap((s) =>
     s.variants.map((v) => {
       if (!workflowIds.has(s.main.path)) workflowIds.set(s.main.path, 9700 + workflowIds.size + 1);
-      return buildRun(s, v, workflowIds.get(s.main.path)!);
+      return withAttempts(s, v, workflowIds.get(s.main.path)!);
     }),
   );
 }

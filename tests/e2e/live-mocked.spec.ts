@@ -266,6 +266,15 @@ test("live mode, nested reusable workflow the token cannot read: explicit reason
   await page.route("https://api.github.com/repos/acme/app/contents/.github/workflows/ci.yml*", (route) =>
     route.request().method() === "OPTIONS" ? route.fallback() : route.fulfill({ json: { type: "file", encoding: "base64", content: Buffer.from(caller).toString("base64") }, headers: cors }),
   );
+  // GitHub names a called workflow's jobs "<call> / <job>".
+  await page.route("https://api.github.com/repos/acme/app/actions/runs/1/jobs*", (route) =>
+    route.request().method() === "OPTIONS"
+      ? route.fallback()
+      : route.fulfill({
+          json: { total_count: 1, jobs: [{ id: 2, name: "ci / build", status: "completed", conclusion: "failure", started_at: null, completed_at: null, html_url: "https://github.com/acme/app/actions/runs/1/job/2", steps: [] }] },
+          headers: cors,
+        }),
+  );
   await page.route("https://api.github.com/repos/org/shared/contents/**", (route) => {
     seen.push({ method: route.request().method(), path: new URL(route.request().url()).pathname + new URL(route.request().url()).search });
     return route.request().method() === "OPTIONS" ? route.fallback() : route.fulfill({ status: 403, json: { message: "Resource not accessible by personal access token" }, headers: cors });

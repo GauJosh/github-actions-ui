@@ -25,6 +25,13 @@ const server = setupServer(
       ? HttpResponse.json({ jobs: [{ id: 2 }] })
       : HttpResponse.json({ jobs: [{ id: 1 }] }, { headers: { Link: '<https://api.github.com/repos/o/r/actions/runs/7/jobs?page=2>; rel="next"' } }),
   ),
+  http.get("https://api.github.com/repos/o/r/actions/runs/7/attempts/1", () => HttpResponse.json({ id: 7, run_attempt: 1 })),
+  http.get("https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs", ({ request }) =>
+    new URL(request.url).searchParams.get("page") === "2"
+      ? HttpResponse.json({ jobs: [{ id: 12, run_attempt: 1 }] })
+      : HttpResponse.json({ jobs: [{ id: 11, run_attempt: 1 }] }, { headers: { Link: '<https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs?page=2>; rel="next"' } }),
+  ),
+  http.get("https://api.github.com/repos/o/r/actions/runs/7/attempts/9", () => HttpResponse.json({ message: "Not Found" }, { status: 404 })),
   http.get("https://api.github.com/repos/o/r/actions/runs/401", () => new HttpResponse(null, { status: 401 })),
   http.get("https://api.github.com/repos/o/r/actions/runs/403", () =>
     HttpResponse.json({ message: "Resource not accessible by personal access token" }, { status: 403 }),
@@ -75,6 +82,19 @@ describe("live GitHub client", () => {
 
   it("follows Link pagination for jobs", async () => {
     expect((await live.getJobs(ref)).map((j) => j.id)).toEqual([1, 2]);
+    expect(seen[0]!.url).toBe("https://api.github.com/repos/o/r/actions/runs/7/jobs?filter=latest&per_page=100");
+  });
+
+  it("reads one run attempt and its own jobs (paginated) with GET only; a missing attempt is an explicit failure", async () => {
+    expect(await live.getRun(ref, 1)).toMatchObject({ id: 7, run_attempt: 1 });
+    expect((await live.getJobs(ref, 1)).map((j) => j.id)).toEqual([11, 12]);
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+      "GET https://api.github.com/repos/o/r/actions/runs/7/attempts/1",
+      "GET https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs?per_page=100",
+      "GET https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs?page=2",
+    ]);
+    const error = await live.getRun(ref, 9).catch((e: unknown) => e);
+    expect((error as GitHubError).failure).toEqual({ kind: "not-found-or-no-permission" });
   });
 
   it.each([

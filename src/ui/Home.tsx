@@ -145,7 +145,7 @@ function OpenRunUrl() {
       return;
     }
     setError(null);
-    window.location.hash = routeToHash({ run: ref, jobId: ref.jobId });
+    window.location.hash = routeToHash({ run: { owner: ref.owner, repo: ref.repo, runId: ref.runId }, jobId: ref.jobId, attempt: ref.attempt });
   }
   return (
     <section className="panel">

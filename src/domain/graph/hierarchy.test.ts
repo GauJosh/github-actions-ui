@@ -222,12 +222,25 @@ describe("execution graph across nested reusable workflows", () => {
     expect(buildOverview(g, CALLER, { manifest: null })).toEqual({ unavailable: expect.stringContaining("some called workflows could not be read") });
   });
 
-  it("partial job lists: a declared job with no job in the run is shown as declared only, never with a status", () => {
+  it("partial job lists: a declared job with no job in the run is definition context, never a node or an edge", () => {
     const g = buildHierarchyGraph(
       successRun().filter((j) => j.name !== "cd / DEV validation"),
       tree(),
     );
-    expect(g.nodes.find((n) => n.key === "def:cd/dev-validation")).toMatchObject({ declaredOnly: true, status: "not_run", members: [] });
+    expect(g.nodes.some((n) => n.key === "def:cd/dev-validation")).toBe(false);
+    expect(g.edges.some((e) => e.from === "def:cd/dev-validation" || e.to === "def:cd/dev-validation")).toBe(false);
+    expect(g.declared).toEqual([expect.objectContaining({ key: "def:cd/dev-validation", id: "dev-validation", context: expect.objectContaining({ path: ["cd"] }) })]);
+  });
+
+  it("a reusable call with no job at all in the run is not drawn, and is not a phase", () => {
+    const g = buildHierarchyGraph(
+      successRun().filter((j) => !j.name.startsWith("ci")),
+      tree(),
+    );
+    expect(g.nodes.some((n) => n.key === "def:ci" || n.key.startsWith("def:ci/"))).toBe(false);
+    expect(g.declared?.map((d) => d.key)).toContain("def:ci");
+    const o = buildOverview(g, CALLER, { manifest: null });
+    expect("phases" in o && o.phases.map((p) => p.name)).not.toContain("ci");
   });
 
   it("ambiguous names: jobs matching two calls are shown without edges rather than guessed", () => {

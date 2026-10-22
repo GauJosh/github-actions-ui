@@ -5,8 +5,10 @@
 // - dependency edges come ONLY from `needs:` in the run's own workflow file (fetched at the run's commit);
 // - matrix and reusable-workflow grouping come from the workflow file, or, without it, from GitHub's job
 //   naming conventions (clearly labelled as name-based);
-// - jobs that cannot be matched to the workflow file are shown without edges.
-// Nothing here infers an edge from timing or order.
+// - jobs that cannot be matched to the workflow file are shown without edges;
+// - jobs a workflow file declares but GitHub did not report for this run (attempt) are NOT execution nodes: they
+//   are kept apart as `declared` (definition context), and a `needs` on one is reported instead of drawn.
+// Nothing here infers an edge from timing or order, and no stage (CI, environments...) is assumed to exist.
 import type { Job, Run } from "../types";
 import { runsOnFailure, type WorkflowDefinition, type WorkflowJobDef, type WorkflowStepDef } from "./workflow-definition";
 
@@ -98,8 +100,6 @@ export type GraphNode = {
   /** Reusable workflow call: the `uses:` value and, when GitHub reported it, the commit it resolved to. */
   uses?: string;
   resolvedWorkflow?: { path: string; sha: string };
-  /** Declared in the workflow file but no job with this name exists in this run. */
-  declaredOnly?: boolean;
   /** From the workflow file: the deployment environment the job targets. */
   environment?: string;
   /** From the workflow file: `if: failure()`, so the job runs only when something upstream failed. */
@@ -130,7 +130,14 @@ export type GraphEvidence =
   | { kind: "workflow-file"; path: string; revision: string; matchedJobs: number; totalJobs: number; notes: string[] }
   | { kind: "unavailable"; reason: string; notes: string[] };
 
-export type RunGraph = { nodes: GraphNode[]; edges: GraphEdge[]; evidence: GraphEvidence };
+/**
+ * A job declared in a workflow file with no job in this run (attempt): definition context, never an execution node.
+ * GitHub reports skipped jobs, so this usually means a job not created yet (upstream still running), or a name that
+ * could not be matched.
+ */
+export type DeclaredJob = { key: string; id: string; label: string; uses?: string; needs: string[]; context?: NodeContext };
+
+export type RunGraph = { nodes: GraphNode[]; edges: GraphEdge[]; evidence: GraphEvidence; declared?: DeclaredJob[] };
 
 // ---- name matching --------------------------------------------------------------------------------
 
@@ -289,7 +296,14 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
   }
 
   const referenced = context.run?.referenced_workflows ?? [];
-  const nodes: GraphNode[] = definition.jobs.map((def) => {
+  const declared: DeclaredJob[] = [];
+  const absent = new Set<string>();
+  for (const def of definition.jobs) {
+    if (assigned.get(def.id)!.length) continue;
+    absent.add(def.id);
+    declared.push({ key: `def:${def.id}`, id: def.id, label: def.name && !EXPR.test(def.name) ? def.name : def.id, ...(def.uses && { uses: def.uses }), needs: def.needs });
+  }
+  const nodes: GraphNode[] = definition.jobs.filter((def) => !absent.has(def.id)).map((def) => {
     const members = assigned.get(def.id)!;
     let resolvedWorkflow: GraphNode["resolvedWorkflow"];
     if (def.uses) {
@@ -307,7 +321,6 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
       members,
       uses: def.uses,
       resolvedWorkflow,
-      declaredOnly: members.length === 0,
       environment: def.environment,
       onFailure: runsOnFailure(def) || undefined,
       stepDefs: def.uses ? undefined : def.steps,
@@ -316,11 +329,17 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
 
   const ids = new Set(definition.jobs.map((d) => d.id));
   const edges: GraphEdge[] = [];
+  const toAbsent: string[] = [];
   for (const def of definition.jobs) {
     for (const need of def.needs) {
-      if (ids.has(need)) edges.push({ from: `def:${need}`, to: `def:${def.id}` });
-      else notes.push(`Job \`${def.id}\` needs \`${need}\`, which the workflow file does not define; no edge is drawn.`);
+      if (!ids.has(need)) notes.push(`Job \`${def.id}\` needs \`${need}\`, which the workflow file does not define; no edge is drawn.`);
+      else if (absent.has(def.id)) continue;
+      else if (absent.has(need)) toAbsent.push(`\`${def.id}\` needs \`${need}\``);
+      else edges.push({ from: `def:${need}`, to: `def:${def.id}` });
     }
+  }
+  if (toAbsent.length) {
+    notes.push(`Not drawn: ${toAbsent.join(", ")}, but there is no job for ${toAbsent.length === 1 ? "it" : "them"} in this run, so the dependency cannot be shown or traced through.`);
   }
 
   for (const job of unmatched) {
@@ -331,12 +350,12 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
       `${unmatched.length} job${unmatched.length === 1 ? "" : "s"} could not be matched to the workflow file${ambiguous ? ` (${ambiguous} matched more than one job definition)` : ""}; shown without dependency edges.`,
     );
   }
-  const declaredOnly = nodes.filter((n) => n.declaredOnly);
-  if (declaredOnly.length) {
+  if (declared.length) {
+    const names = declared.map((d) => `\`${d.id}\``).join(", ");
     notes.push(
-      declaredOnly.length === 1
-        ? "1 job is declared in the workflow file but has no matching job in this run."
-        : `${declaredOnly.length} jobs are declared in the workflow file but have no matching job in this run.`,
+      declared.length === 1
+        ? `1 job is declared in the workflow file but has no matching job in this run (${names}); it is listed as declared, not drawn as a job.`
+        : `${declared.length} jobs are declared in the workflow file but have no matching job in this run (${names}); they are listed as declared, not drawn as jobs.`,
     );
   }
   if (nodes.some((n) => n.kind === "reusable")) notes.push("Dependencies inside called (reusable) workflows are not shown.");
@@ -345,6 +364,7 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
     nodes,
     edges,
     evidence: { kind: "workflow-file", path: context.file.path, revision: context.file.revision, matchedJobs: jobs.length - unmatched.length, totalJobs: jobs.length, notes },
+    ...(declared.length && { declared }),
   };
 }
 

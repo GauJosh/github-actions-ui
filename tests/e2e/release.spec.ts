@@ -9,7 +9,7 @@ test("gallery: pick a scenario variant, see which is selected, switch variants, 
   const github = await forbidGitHub(page);
   await page.goto("/?mode=fixtures");
   const gallery = page.getByTestId("demo-gallery");
-  await expect(gallery.locator("article")).toHaveCount(8);
+  await expect(gallery.locator("article")).toHaveCount(9);
   await gallery.getByTestId("variant-release-prod-waiting").click();
 
   const strip = page.getByTestId("gallery-strip");
@@ -252,7 +252,7 @@ test.describe("79-job platform release: focused, readable views", () => {
     await expect(phaseStatus(page, "prod")).toHaveAttribute("data-phase-status", "running");
     await expect(page.getByTestId("phase-prod")).toContainText("Approved by release-manager");
     await expect(page.getByTestId("phase-prod-counts")).toContainText("running");
-    await expect(page.getByTestId("phase-prod-counts")).toContainText("not started");
+    await expect(page.getByTestId("phase-prod-counts")).toContainText("declared, no job yet");
     await page.getByTestId("phase-prod").click();
     await expect(page.getByTestId("phase-detail").locator('[data-node-key="def:deploy-api-prod"]')).toHaveAttribute("data-status", "in_progress");
   });

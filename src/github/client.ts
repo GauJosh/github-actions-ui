@@ -109,14 +109,20 @@ export function createGitHubClient(options: { apiBase: string; transport: Transp
       return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
     },
 
-    async getRun(ref: RunRef): Promise<Run> {
-      return (await getJson<Run>(`${repoPath(ref)}/actions/runs/${ref.runId}`)).body;
+    /** The run (its latest attempt), or one attempt of it (`GET …/runs/{id}/attempts/{n}`). */
+    async getRun(ref: RunRef, attempt?: number): Promise<Run> {
+      return (await getJson<Run>(`${repoPath(ref)}/actions/runs/${ref.runId}${attempt ? `/attempts/${attempt}` : ""}`)).body;
     },
 
-    /** Jobs of the latest attempt, following `Link: rel="next"` within the API host. */
-    async getJobs(ref: RunRef): Promise<Job[]> {
+    /**
+     * Jobs of the latest attempt (`filter=latest`), or of one attempt (`…/attempts/{n}/jobs`), following
+     * `Link: rel="next"` within the API host.
+     */
+    async getJobs(ref: RunRef, attempt?: number): Promise<Job[]> {
       const jobs: Job[] = [];
-      let path: string | null = `${repoPath(ref)}/actions/runs/${ref.runId}/jobs?filter=latest&per_page=100`;
+      let path: string | null = attempt
+        ? `${repoPath(ref)}/actions/runs/${ref.runId}/attempts/${attempt}/jobs?per_page=100`
+        : `${repoPath(ref)}/actions/runs/${ref.runId}/jobs?filter=latest&per_page=100`;
       for (let page = 0; path && page < 10; page++) {
         const { body, link } = (await getJson<{ jobs: Job[] }>(path)) as { body: { jobs: Job[] }; link: string | null };
         jobs.push(...body.jobs);

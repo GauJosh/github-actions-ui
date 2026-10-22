@@ -52,6 +52,7 @@ export function describeInput(name: string, value: string): SourceInput {
 /** Builds the source tree. `graph` (the run's execution graph) links declarations to what ran. */
 export function buildSourceTree(tree: WorkflowTree, graph?: RunGraph | null, path: string[] = [], labels: string[] = [], depth = 0): SourceNode {
   const nodes = new Map((graph?.nodes ?? []).map((n) => [n.key, n]));
+  const declared = new Set((graph?.declared ?? []).map((d) => d.key));
   const def = tree.definition;
   const keyOf = (id: string) => `def:${[...path, id].join("/")}`;
   const jobs: SourceJob[] = (def?.jobs ?? []).map((j: WorkflowJobDef) => {
@@ -61,10 +62,10 @@ export function buildSourceTree(tree: WorkflowTree, graph?: RunGraph | null, pat
     const run: SourceJob["run"] = !graph
       ? { unknown: "The run's jobs are still loading." }
       : node
-        ? node.declaredOnly
+        ? { nodeKey: node.key, jobs: node.members.length, status: node.status }
+        : declared.has(keyOf(j.id))
           ? { declaredOnly: true }
-          : { nodeKey: node.key, jobs: node.members.length, status: node.status }
-        : expanded
+          : expanded
           ? undefined
           : { unknown: "Not matched to a job of this run (it may be inside a call shown as one node, or its name was ambiguous)." };
     const child = j.uses ? tree.calls.get(j.id) : undefined;

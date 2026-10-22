@@ -132,9 +132,11 @@ export type Phase = {
   environment?: string;
   nodeKeys: string[];
   status: PhaseStatus;
-  /** Jobs that have finished (any conclusion) and all jobs in the phase. */
+  /** Jobs that have finished (any conclusion) and all jobs GitHub reported in the phase. */
   done: number;
   total: number;
+  /** Jobs the phase file puts in this phase that have no job in this run yet (definition context, not jobs). */
+  declared: number;
   failedKeys: string[];
   gate?: GateState;
   recovery?: "succeeded" | "failed" | "running" | "not-needed" | "none";
@@ -215,7 +217,12 @@ type Grouping = {
 };
 
 function declaredGrouping(graph: RunGraph, manifest: PhaseManifest): Grouping {
-  const byYaml = new Map(graph.nodes.filter((n) => n.yamlId).map((n) => [n.yamlId!, n.key]));
+  // Jobs of the run's own workflow: those GitHub reported, then those declared with no job in this run (which keep
+  // their phase for phase-level dependencies and counts, but are never phase members).
+  const byYaml = new Map([
+    ...(graph.declared ?? []).filter((d) => !d.context).map((d) => [d.id, d.key] as const),
+    ...graph.nodes.filter((n) => n.yamlId).map((n) => [n.yamlId!, n.key] as const),
+  ]);
   const nodePhase = new Map<string, string>();
   const nodeGroup = new Map<string, string>();
   const declaredRoles = new Map<string, JobRole>();
@@ -431,8 +438,12 @@ export function buildOverview(
   }
   const isRecovery = (k: string) => roles.get(k)?.role === "recovery";
 
+  // Phase-level dependencies: the run's edges, plus the declared `needs` of jobs with no job in this run yet (so a
+  // phase still waiting for its first job is attributed to what it waits for). Those are never drawn as job edges.
+  const declaredEdges = (graph.declared ?? []).flatMap((d) => d.needs.map((need) => ({ from: `def:${[...(d.context?.path ?? []), need].join("/")}`, to: d.key })));
+  const declaredKeys = new Set((graph.declared ?? []).map((d) => d.key));
   const phaseEdgeCount = new Map<string, number>();
-  for (const e of graph.edges) {
+  for (const e of [...graph.edges, ...declaredEdges]) {
     const a = grouping.nodePhase.get(e.from);
     const b = grouping.nodePhase.get(e.to);
     if (a && b && a !== b) phaseEdgeCount.set(`${a}\u0000${b}`, (phaseEdgeCount.get(`${a}\u0000${b}`) ?? 0) + 1);
@@ -469,6 +480,7 @@ export function buildOverview(
     else if (statuses.some((s) => s === "in_progress" || s === "queued")) status = "running";
     else if (statuses.length && statuses.every((s) => s === "skipped" || s === "not_run")) status = statuses.every((s) => s === "not_run") ? "not-started" : "skipped";
     else if (statuses.some((s) => s === "not_run")) status = "running";
+    else if (pn.length === 0) status = "not-started";
     else status = "succeeded";
 
     const members = pn.flatMap((n) => n.members.map((m) => m.job));
@@ -482,7 +494,8 @@ export function buildOverview(
       nodeKeys: keys,
       status,
       done: members.filter((j) => DONE.includes(jobStatus(j))).length,
-      total: members.length + pn.filter((n) => n.declaredOnly).length,
+      total: members.length,
+      declared: [...grouping.nodePhase].filter(([k, id]) => id === decl.id && declaredKeys.has(k)).length,
       failedKeys,
       gate,
       recovery: rec,

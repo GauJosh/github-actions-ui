@@ -29,7 +29,7 @@ describe("enterprise fixtures: structure", () => {
     const again = enterpriseRuns();
     expect(JSON.stringify(again.map((r) => [r.run, r.jobs]))).toBe(JSON.stringify(runs.map((r) => [r.run, r.jobs])));
     for (const r of runs) expect(String(r.run.display_title)).toMatch(/^\[synthetic\]/);
-    expect(gallery(runs).scenarios.map((s) => s.id)).toEqual(["reusable-ci", "multi-env-cd", "release", "approval-gates", "failure-rollback", "platform", "shared-cicd", "promotion-checks"]);
+    expect(gallery(runs).scenarios.map((s) => s.id)).toEqual(["reusable-ci", "multi-env-cd", "release", "approval-gates", "failure-rollback", "platform", "shared-cicd", "promotion-checks", "deploy-only"]);
   });
 
   it("represent 10+ custom actions as steps inside jobs, never as jobs", () => {

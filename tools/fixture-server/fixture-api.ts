@@ -27,7 +27,9 @@ type RunJson = Record<string, unknown> & {
   head_sha: string;
   created_at?: string;
 };
-type LogSource = { size: number; read(start: number, end: number): Buffer } | { missing: string };
+type LogSource = { size: number; read(start: number, end: number): Buffer } | { missing: string } | { gone: string };
+/** An earlier attempt of a run: its run object and jobs, or the error its jobs endpoint answers with. */
+type FixtureAttempt = { run: RunJson; jobs(): string | object; jobsError?: { status: number; message: string } };
 type FixtureRun = {
   owner: string;
   repo: string;
@@ -36,6 +38,8 @@ type FixtureRun = {
   workflow(): string | { status: number; message: string } | null;
   /** Other files readable at the run's commit (called workflows, the phase file). */
   files?: Map<string, string>;
+  /** Earlier attempts by number (the latest attempt is `run` and `jobs`). */
+  attempts?: Map<number, FixtureAttempt>;
   approvals?: unknown[];
   pending?: unknown[];
 };
@@ -61,13 +65,28 @@ function loadCorpus(root: string, decompress: (jobId: number, path: string) => B
     for (const id of readdirSync(join(root, ownerRepo))) {
       const dir = join(root, ownerRepo, id);
       const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as { logs: Record<string, string> };
-      const latest = readdirSync(join(dir, "attempts")).map(Number).sort((a, b) => b - a)[0]!;
+      const numbers = readdirSync(join(dir, "attempts")).map(Number).sort((a, b) => b - a);
+      const latest = numbers[0]!;
+      const run = JSON.parse(readFileSync(join(dir, "run.json"), "utf8")) as RunJson;
+      // The corpus captured each attempt's jobs, but only the latest run object. An earlier attempt's run object is
+      // the captured run with that attempt's number, and its status and conclusion taken from that attempt's jobs.
+      const attempts = new Map<number, FixtureAttempt>();
+      for (const n of numbers.slice(1)) {
+        const text = readFileSync(join(dir, "attempts", String(n), "jobs.json"), "utf8");
+        const parsed = JSON.parse(text) as { jobs: { conclusion: string | null; started_at: string | null }[] } | { conclusion: string | null; started_at: string | null }[];
+        const list = Array.isArray(parsed) ? parsed : parsed.jobs;
+        const order = ["failure", "cancelled", "timed_out", "success", "skipped"];
+        const conclusion = order.find((c) => list.some((j) => j.conclusion === c)) ?? null;
+        const started = list.map((j) => j.started_at).filter((t): t is string => !!t).sort()[0];
+        attempts.set(n, { run: { ...run, run_attempt: n, status: "completed", conclusion, ...(started && { run_started_at: started }) }, jobs: () => text });
+      }
       runs.set(Number(id), {
         owner,
         repo,
-        run: JSON.parse(readFileSync(join(dir, "run.json"), "utf8")) as RunJson,
+        run,
         jobs: () => readFileSync(join(dir, "attempts", String(latest), "jobs.json"), "utf8"),
         workflow: () => (existsSync(join(dir, "workflow.yml")) ? readFileSync(join(dir, "workflow.yml"), "utf8") : null),
+        attempts,
       });
       for (const [jobId, status] of Object.entries(manifest.logs)) {
         const path = join(dir, "logs", `${jobId}.log.gz`);
@@ -113,12 +132,28 @@ function loadCorpus(root: string, decompress: (jobId: number, path: string) => B
       files: e.files,
       approvals: e.approvals,
       pending: e.pending,
+      attempts: new Map(
+        (e.attempts ?? []).map((a) => [
+          a.run.run_attempt as number,
+          {
+            run: a.run as RunJson,
+            jobs: () => ({ total_count: a.jobs.length, jobs: a.jobs }),
+            ...(a.jobsError && { jobsError: { status: a.jobsError, message: "[synthetic] Server Error" } }),
+          },
+        ]),
+      ),
     });
-    for (const job of e.jobs) {
-      const text = e.logs.get(job.id as number);
-      logs.set(job.id as number, () =>
-        text === undefined ? { missing: "No log for this job (skipped, waiting or not finished)" } : { size: Buffer.byteLength(text), read: (a, b) => Buffer.from(text).subarray(a, b) },
-      );
+    for (const { jobs, logs: texts, expired } of [{ jobs: e.jobs, logs: e.logs, expired: false }, ...(e.attempts ?? []).map((a) => ({ jobs: a.jobs, logs: a.logs, expired: Boolean(a.logsExpired) }))]) {
+      for (const job of jobs) {
+        const text = texts.get(job.id as number);
+        logs.set(job.id as number, () =>
+          expired && text !== undefined
+            ? { gone: "[synthetic] The log for this job has expired." }
+            : text === undefined
+              ? { missing: "No log for this job (skipped, waiting or not finished)" }
+              : { size: Buffer.byteLength(text), read: (a, b) => Buffer.from(text).subarray(a, b) },
+        );
+      }
     }
   }
 
@@ -292,6 +327,21 @@ export function createFixtureMiddleware(options: { repoRoot: string; lockPath: s
       return send(res, 200, { total_count: filtered.length, workflow_runs: page }, link ? { Link: link } : {});
     }
 
+    // One attempt of a run, and its jobs (GitHub: GET …/runs/{id}/attempts/{n} and …/attempts/{n}/jobs).
+    m = /^\/actions\/runs\/(\d+)\/attempts\/(\d+)(\/jobs)?$/.exec(rest);
+    if (m) {
+      const run = corpus.runs.get(Number(m[1]));
+      if (!run || run.owner !== owner || run.repo !== repo) return send(res, 404, { message: "Not Found" });
+      const n = Number(m[2]);
+      const latest = Number(run.run.run_attempt ?? 1);
+      if (n === latest) return send(res, 200, m[3] ? run.jobs() : run.run);
+      const attempt = run.attempts?.get(n);
+      if (!attempt) return send(res, 404, { message: "Not Found" });
+      if (!m[3]) return send(res, 200, attempt.run);
+      if (attempt.jobsError) return send(res, attempt.jobsError.status, { message: attempt.jobsError.message });
+      return send(res, 200, attempt.jobs());
+    }
+
     m = /^\/actions\/runs\/(\d+)(\/jobs|\/approvals|\/pending_deployments)?$/.exec(rest);
     if (m) {
       const run = corpus.runs.get(Number(m[1]));
@@ -318,6 +368,7 @@ export function createFixtureMiddleware(options: { repoRoot: string; lockPath: s
       const source = corpus.logs.get(Number(m[1]))?.();
       if (!source) return send(res, 404, { message: "Not Found" });
       if ("missing" in source) return send(res, 404, { message: source.missing });
+      if ("gone" in source) return send(res, 410, { message: source.gone });
       const { size, read } = source;
       const range = parseRange(req.headers.range, size);
       if (range === "invalid") return send(res, 416, { message: "Range Not Satisfiable" }, { "Content-Range": `bytes */${size}` });

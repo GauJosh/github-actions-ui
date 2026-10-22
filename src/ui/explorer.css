@@ -319,6 +319,50 @@ code {
 .evidence.unavailable {
   border-color: var(--warn);
 }
+.declared-context {
+  margin: 2px 0;
+  color: var(--muted);
+}
+.declared-context summary {
+  cursor: pointer;
+}
+.declared-context ul {
+  margin: 2px 0;
+}
+/* Run attempts: a row of buttons under the run header; the inspected attempt is outlined. */
+.attempts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+.attempt {
+  border-radius: 12px;
+  padding: 1px 10px;
+}
+.attempt.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  font-weight: 600;
+}
+.attempt-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--warn);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.attempt-banner p {
+  margin: 0;
+  flex: 1 1 320px;
+}
 .evidence p {
   margin: 2px 0;
 }

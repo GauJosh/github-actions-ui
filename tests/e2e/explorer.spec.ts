@@ -71,7 +71,9 @@ test("workflow file that does not match the jobs: the unmatched job has no edges
   await expect(compile).toContainText("not matched to the workflow file");
   const key = await compile.getAttribute("data-node-key");
   expect((await edges(page)).some((e) => e.includes(key!))).toBe(false);
-  await expect(node(page, "def:build")).toContainText("no job in this run");
+  // `build` has no job in this run: listed as declared context, never drawn as a job.
+  await expect(node(page, "def:build")).toHaveCount(0);
+  await expect(page.getByTestId("declared-context")).toContainText("build");
 });
 
 test("reusable workflows and an in-progress deployment are shown with their real states", async ({ page }) => {
@@ -83,7 +85,9 @@ test("reusable workflows and an in-progress deployment are shown with their real
 
   await page.goto("/?mode=fixtures#/runs/fixtures/synthetic/990000102?view=graph");
   await expect(node(page, "def:deploy-prod")).toContainText("1 running · 1 waiting · 1 queued");
-  await expect(node(page, "def:verify-prod")).toHaveAttribute("data-status", "not_run");
+  await expect(node(page, "def:verify-prod")).toHaveCount(0);
+  await expect(page.getByTestId("declared-context")).toContainText("verify-prod");
+  await expect(page.getByTestId("declared-context")).toContainText("GitHub may not have created them yet");
   await expect(page.getByRole("heading", { name: "Still running" })).toBeVisible();
 });
 
