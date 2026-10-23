@@ -32,6 +32,8 @@ const server = setupServer(
       : HttpResponse.json({ jobs: [{ id: 11, run_attempt: 1 }] }, { headers: { Link: '<https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs?page=2>; rel="next"' } }),
   ),
   http.get("https://api.github.com/repos/o/r/actions/runs/7/attempts/9", () => HttpResponse.json({ message: "Not Found" }, { status: 404 })),
+  http.get("https://api.github.com/search/repositories", () => HttpResponse.json({ total_count: 1, incomplete_results: false, items: [{ full_name: "acme/app" }] })),
+  http.get("https://api.github.com/repos/acme/app", () => HttpResponse.json({ full_name: "acme/app" })),
   http.get("https://api.github.com/repos/o/r/actions/runs/401", () => new HttpResponse(null, { status: 401 })),
   http.get("https://api.github.com/repos/o/r/actions/runs/403", () =>
     HttpResponse.json({ message: "Resource not accessible by personal access token" }, { status: 403 }),
@@ -83,6 +85,18 @@ describe("live GitHub client", () => {
   it("follows Link pagination for jobs", async () => {
     expect((await live.getJobs(ref)).map((j) => j.id)).toEqual([1, 2]);
     expect(seen[0]!.url).toBe("https://api.github.com/repos/o/r/actions/runs/7/jobs?filter=latest&per_page=100");
+  });
+
+  it("searches repositories by name (optionally within one owner) and reads one repository, with GET only", async () => {
+    expect(await live.searchRepos(" pay  app ", "acme")).toEqual({ repos: [{ full_name: "acme/app" }], totalCount: 1, incomplete: false });
+    await live.searchRepos("", "acme");
+    expect(await live.getRepo({ owner: "acme", repo: "app" })).toMatchObject({ full_name: "acme/app" });
+    const urls = seen.map((s) => `${s.method} ${decodeURIComponent(s.url).replace(/\+/g, " ")}`);
+    expect(urls).toEqual([
+      "GET https://api.github.com/search/repositories?q=pay app in:name user:acme fork:true&per_page=30",
+      "GET https://api.github.com/search/repositories?q=user:acme fork:true&per_page=30&sort=updated",
+      "GET https://api.github.com/repos/acme/app",
+    ]);
   });
 
   it("reads one run attempt and its own jobs (paginated) with GET only; a missing attempt is an explicit failure", async () => {

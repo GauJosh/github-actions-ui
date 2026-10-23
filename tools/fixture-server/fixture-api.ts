@@ -277,6 +277,24 @@ export function createFixtureMiddleware(options: { repoRoot: string; lockPath: s
       return send(res, 200, page, link ? { Link: link } : {});
     }
 
+    // Repository search (GitHub's `q` syntax, the subset the app sends): words match the name; `user:` the owner.
+    if (path === "/api/search/repositories") {
+      const words = (url.searchParams.get("q") ?? "").split(/\s+/).filter(Boolean);
+      const owner = words.find((w) => w.startsWith("user:") || w.startsWith("org:"))?.split(":")[1]?.toLowerCase();
+      const terms = words.filter((w) => !w.includes(":")).map((w) => w.toLowerCase());
+      const items = corpus.repos.filter((r) => {
+        const [o, n] = String(r.full_name).toLowerCase().split("/") as [string, string];
+        return (!owner || o === owner) && terms.every((t) => n.includes(t));
+      });
+      const perPage = Math.min(100, Math.max(1, Number(url.searchParams.get("per_page") ?? 30)));
+      return send(res, 200, { total_count: items.length, incomplete_results: false, items: items.slice(0, perPage) });
+    }
+    const exactRepo = /^\/api\/repos\/([^/]+)\/([^/]+)$/.exec(path);
+    if (exactRepo) {
+      const repo = corpus.repos.find((r) => String(r.full_name).toLowerCase() === `${exactRepo[1]}/${exactRepo[2]}`.toLowerCase());
+      return repo ? send(res, 200, repo) : send(res, 404, { message: "Not Found" });
+    }
+
     const repoMatch = /^\/api\/repos\/([^/]+)\/([^/]+)(\/.*)$/.exec(path);
     if (!repoMatch) return send(res, 404, { message: "Not Found" });
     const [, owner, repo, rest] = repoMatch as unknown as [string, string, string, string];

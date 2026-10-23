@@ -71,6 +71,24 @@ export function createGitHubClient(options: { apiBase: string; transport: Transp
       return { repos: body, hasNext: nextPath(link, apiBase) !== null };
     },
 
+    /** One repository by name: whether it exists and this token can see it. */
+    async getRepo(ref: RepoRef): Promise<Repository> {
+      return (await getJson<Repository>(repoPath(ref))).body;
+    },
+
+    /**
+     * GitHub's repository search, by name, across every repository the token can see (`in:name`, forks included),
+     * optionally within one owner (user or organisation). One page of the best matches; GitHub allows about 30
+     * searches a minute per token.
+     */
+    async searchRepos(term: string, owner?: string, perPage = 30): Promise<{ repos: Repository[]; totalCount: number; incomplete: boolean }> {
+      const words = term.trim().split(/\s+/).filter(Boolean);
+      const q = [...words, ...(words.length ? ["in:name"] : []), ...(owner ? [`user:${owner}`] : []), "fork:true"].join(" ");
+      const query = new URLSearchParams({ q, per_page: String(perPage), ...(words.length ? {} : { sort: "updated" }) });
+      const { body } = await getJson<{ total_count: number; incomplete_results: boolean; items: Repository[] }>(`/search/repositories?${query}`);
+      return { repos: body.items, totalCount: body.total_count, incomplete: body.incomplete_results };
+    },
+
     async listWorkflows(ref: RepoRef): Promise<Workflow[]> {
       return (await getJson<{ workflows: Workflow[] }>(`${repoPath(ref)}/actions/workflows?per_page=100`)).body.workflows;
     },

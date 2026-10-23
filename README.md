@@ -146,7 +146,7 @@ https://github.com/OWNER/REPO/actions/runs/123456789/job/987654321
 https://github.com/OWNER/REPO/actions/runs/123456789/attempts/2
 ```
 
-**Or browse.** Pick a repository and filter its runs by status, branch, event or workflow.
+**Or find a repository.** Type part of its name, `org/` to search within one organisation, or an exact `org/repo` and press Enter. GitHub's search covers every repository your token can see, even thousands. Then filter its runs by status, branch, event or workflow.
 
 **Then, inside a run:**
 

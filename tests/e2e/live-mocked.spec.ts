@@ -155,6 +155,57 @@ test("CSP is enforced: a host removed from connect-src is blocked", async ({ pag
   expect((await cspViolations(page)).some((v) => v.startsWith("connect-src"))).toBe(true);
 });
 
+test("live: thousands of repositories; a repository not on the loaded page is found by GitHub's search, by org, or by exact name", async ({ page }) => {
+  const cors = { "access-control-allow-origin": ORIGIN, "access-control-allow-headers": "authorization, accept, x-github-api-version", "access-control-expose-headers": "Link" };
+  const searches: string[] = [];
+  const repo = (owner: string, name: string) => ({ full_name: `${owner}/${name}`, name, owner: { login: owner }, private: true, pushed_at: "2026-10-01T00:00:00Z" });
+  await page.route("https://api.github.com/**", (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: { ...cors, "access-control-allow-methods": "GET, HEAD" } });
+    if (url.pathname === "/user/repos") {
+      // Page 1 of 50+: 100 repositories, none of them the one we look for.
+      const repos = Array.from({ length: 100 }, (_, i) => repo("acme-platform", `service-${i}`));
+      return route.fulfill({ json: repos, headers: { ...cors, link: '<https://api.github.com/user/repos?per_page=100&sort=pushed&page=2>; rel="next"' } });
+    }
+    if (url.pathname === "/search/repositories") {
+      const q = url.searchParams.get("q")!;
+      searches.push(q);
+      const items = q.includes("testapp") ? [repo("acme-apps", "payments-testapp")] : q.includes("user:acme-apps") ? [repo("acme-apps", "payments-testapp"), repo("acme-apps", "ledger")] : [];
+      return route.fulfill({ json: { total_count: items.length, incomplete_results: false, items }, headers: cors });
+    }
+    if (url.pathname === "/repos/acme-apps/ledger") return route.fulfill({ json: repo("acme-apps", "ledger"), headers: cors });
+    if (url.pathname.startsWith("/repos/acme-apps/hidden")) return route.fulfill({ status: 404, json: { message: "Not Found" }, headers: cors });
+    if (url.pathname.endsWith("/actions/workflows")) return route.fulfill({ json: { total_count: 0, workflows: [] }, headers: cors });
+    if (url.pathname.endsWith("/actions/runs")) return route.fulfill({ json: { total_count: 0, workflow_runs: [] }, headers: cors });
+    return route.fulfill({ status: 404, json: { message: "Not Found" }, headers: cors });
+  });
+  await page.goto("/");
+  await page.getByTestId("token-input").fill(FAKE_TOKEN);
+  await page.getByRole("button", { name: "Connect" }).click();
+  await expect(page.getByTestId("repo-list").getByRole("link")).toHaveCount(100);
+  const box = page.getByLabel("Find a repository");
+
+  // Part of a name: not among the 100 loaded, found by GitHub's search.
+  await box.fill("testapp");
+  await expect(page.getByTestId("repo-list").getByRole("link")).toHaveText([/acme-apps\/payments-testapp/]);
+  await expect(page.getByTestId("repo-search-status")).toContainText("1 match in GitHub's search");
+  // Within one organisation.
+  await box.fill("acme-apps/");
+  await expect(page.getByTestId("repo-list").locator(".repo-name")).toHaveText(["acme-apps/payments-testapp", "acme-apps/ledger"]);
+  // An exact name: checked directly, then opened with Enter.
+  await box.fill("acme-apps/ledger");
+  await expect(page.getByTestId("repo-list").locator(".repo-name").first()).toHaveText("acme-apps/ledger");
+  await box.fill("acme-apps/hidden");
+  await expect(page.getByTestId("repo-not-found")).toContainText("acme-apps/hidden was not found, or this token cannot see it");
+  await box.fill("acme-apps/ledger");
+  await box.press("Enter");
+  await expect(page).toHaveURL(/#\/repos\/acme-apps\/ledger$/);
+
+  expect(searches).toContain("testapp in:name fork:true");
+  expect(searches).toContain("user:acme-apps fork:true");
+  // Only page 1 of the repository list was ever requested.
+});
+
 test("live dashboard: a token that cannot list repositories, rate limits, and a failed next page are explicit states", async ({ page }) => {
   const cors = { "access-control-allow-origin": ORIGIN, "access-control-allow-headers": "authorization, accept, x-github-api-version", "access-control-expose-headers": "Link, x-ratelimit-remaining, x-ratelimit-reset" };
   let runPages = 0;
@@ -179,8 +230,8 @@ test("live dashboard: a token that cannot list repositories, rate limits, and a 
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.getByRole("alert")).toContainText("This token cannot list repositories");
 
-  await page.getByLabel("Repository (owner/repo)").fill("acme/limited");
-  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByLabel("Find a repository").fill("acme/limited");
+  await page.getByLabel("Find a repository").press("Enter");
   await expect(page.getByRole("alert")).toContainText("GitHub rate limit reached. It resets at");
 
   // Same page, same in-memory session: only the fragment changes.

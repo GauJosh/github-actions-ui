@@ -626,3 +626,23 @@ select {
 .gallery-outcome {
   white-space: nowrap;
 }
+
+/* ---- repository finder ---- */
+.repo-search {
+  margin: 10px 0 2px;
+}
+.repo-search .filter-input {
+  margin: 0;
+  padding: 9px 12px;
+  font-size: 14.5px;
+}
+.repo-search + .note {
+  margin: 4px 0 10px;
+}
+.repo-section {
+  margin: 6px 0 6px;
+  font: 600 11px var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
