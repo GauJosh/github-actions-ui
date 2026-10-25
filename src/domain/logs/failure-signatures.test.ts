@@ -75,6 +75,13 @@ describe("failure signatures, heuristics and false positives", () => {
     });
   }
 
+  it("output inside a runner job-setup group is the runner's, and a real ##[warning] stays a warning", () => {
+    const c = classifyLines(["##[group]Operating System", "Error: sample text shown by the runner image", "##[endgroup]", "##[warning]Deployment slot is almost full"]);
+    expect(kindOf(c.kinds[1]!)).toBe("runner");
+    expect(reasonOf(c.reasons[1]!)).toBe("inside a runner job-setup group");
+    expect(kindOf(c.kinds[3]!)).toBe("warning");
+  });
+
   it("ranks evidence: specific annotation, signature, test failure, exit-code-only annotation, text match", () => {
     const lines = ["##[error]Deployment target not found", "TypeError: x is not a function", "FAIL src/a.test.ts", "##[error]Process completed with exit code 1.", "error: retrying", "plain"];
     const c = classifyLines(lines);
@@ -108,7 +115,7 @@ describe("counts follow the scope", () => {
   it("counts, tiers and error navigation cover only the selected step's lines", () => {
     const whole = view(src, spec()).summary;
     expect(whole.counts.errors).toBe(4);
-    expect(whole.tiers).toEqual({ annotations: 1, signatures: 2, text: 1, warnings: 2 });
+    expect(whole.tiers).toEqual({ annotations: 1, signatures: 2, text: 1, warnings: 1 });
     const checkout = view(src, spec({ scope: [14, 24] })).summary;
     expect(checkout.counts.errors).toBe(0);
     expect(checkout.counts.commands).toBe(2);
@@ -145,7 +152,7 @@ describe("step-first Essential output", () => {
     expect(summary.stepRows).toEqual(rows.flatMap((r, i) => (r.t === "step" ? [i] : [])));
     expect(lineNumbers(rows)).toEqual([37, 44, 45, 46, 47, 48, 49, 50, 51, 52]);
     expect(headings[2]!.preview).toMatchObject({ n: 36, text: SAMPLE[36] });
-    expect(headings[3]!.tiers).toEqual({ annotations: 1, signatures: 2, text: 1, warnings: 2 });
+    expect(headings[3]!.tiers).toEqual({ annotations: 1, signatures: 2, text: 1, warnings: 1 });
     expect(summary.steps.find((s) => s.number === 4)!.evidence.map((e) => e.n)).toEqual([46, 47, 52]);
   });
 

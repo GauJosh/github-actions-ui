@@ -6,7 +6,7 @@ import type { Environment } from "../app/environment";
 import { durationMs } from "../domain/graph/build";
 import { routeToHash } from "../domain/run-url";
 import type { RepoRef, Run, RunFilters } from "../domain/types";
-import { GitHubError } from "../github/client";
+import { AttemptMismatchError, GitHubError } from "../github/client";
 import { failureText } from "./copy";
 import { absoluteTime, firstLine, formatDuration, relativeTime, shortSha } from "./format";
 import { StatusBadge, statusOf } from "./status";
@@ -234,7 +234,7 @@ function RunSkeleton() {
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   return (
     <div className="state state-error" role="alert">
-      <p>{error instanceof GitHubError ? failureText(error.failure) : "Something went wrong talking to GitHub."}</p>
+      <p>{error instanceof GitHubError ? failureText(error.failure) : error instanceof AttemptMismatchError ? error.message : "Something went wrong talking to GitHub."}</p>
       {onRetry && <button onClick={onRetry}>Try again</button>}
     </div>
   );

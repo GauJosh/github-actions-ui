@@ -15,6 +15,7 @@ import { calledWorkflowGraph, durationMs, type GraphNode } from "../../domain/gr
 import { treeAt } from "../../domain/graph/hierarchy";
 import { layoutGraph } from "../../domain/graph/layout";
 import { deploymentsOf } from "../../domain/insights/deployments";
+import { analyzeImpact } from "../../domain/insights/impact";
 import { buildSourceTree } from "../../domain/insights/source";
 import { computeRunStats } from "../../domain/insights/stats";
 import { buildTimeline } from "../../domain/insights/timeline";
@@ -22,6 +23,7 @@ import { buildOverview, gatesFor, type ReleaseOverview as Overview } from "../..
 import { routeToHash, type Route } from "../../domain/run-url";
 import type { Job, Run, RunRef } from "../../domain/types";
 import { GalleryStrip } from "../../fixture-mode/gallery";
+import { AttemptMismatchError } from "../../github/client";
 import { loadGateEvidence, loadPhaseManifest } from "../../runs/release";
 import { graphFor, loadWorkflowDefinition, rootFile } from "../../runs/workflow-graph";
 import { loadWorkflowTree } from "../../runs/workflow-tree";
@@ -29,9 +31,12 @@ import { absoluteTime, firstLine, formatDuration, relativeTime, shortSha } from 
 import { LogPanel } from "../LogPanel";
 import { ErrorState } from "../RepoDashboard";
 import { StatusBadge, StatusIcon, statusOf } from "../status";
+import { FailureImpact, impactFocus } from "./FailureImpact";
 import { GraphCanvas, nodeHeight } from "./GraphCanvas";
 import { JobDetails } from "./JobDetails";
 import { JobList } from "./JobList";
+import { RunCompare } from "./RunCompare";
+import { RunSearch } from "./RunSearch";
 import { PhaseDetail } from "./PhaseDetail";
 import { ReleaseOverview } from "./ReleaseOverview";
 import { RunStats } from "./RunStats";
@@ -39,6 +44,8 @@ import { SourceExplorer } from "./SourceExplorer";
 import { Timeline } from "./Timeline";
 
 type Props = { env: Environment; run: RunRef; route: Route };
+
+const VIEW_NAME = { overview: "Release overview", graph: "Execution graph", timeline: "Timeline", source: "Workflow source", compare: "Comparison", search: "Search" } as const;
 
 export function RunExplorer({ env, run: ref, route }: Props) {
   const { jobId, log, line, step, attempt } = route;
@@ -110,11 +117,15 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     for (const k of release.unassignedKeys) m.set(k, "Other jobs");
     return m;
   }, [release]);
-  const view: "overview" | "graph" | "timeline" | "source" = route.view ?? (overview && !release ? "graph" : "overview");
+  const view: "overview" | "graph" | "timeline" | "source" | "compare" | "search" = route.view ?? (overview && !release ? "graph" : "overview");
 
   // Run insights: statistics (available as soon as jobs load; the critical path needs the graph), the timeline
   // and the workflow source tree, all from data already loaded for the run.
   const stats = useMemo(() => (jobs.data ? computeRunStats(jobs.data, graph) : null), [jobs.data, graph]);
+  // Failure impact: from the graph of this attempt only (its jobs and the workflow file's needs).
+  const impact = useMemo(() => (graph ? analyzeImpact(graph, run.data) : null), [graph, run.data]);
+  const impactShown = view === "graph" && route.impact && impact ? (impact.failures.some((f) => f.key === route.impact) ? route.impact : "all") : undefined;
+  const focus = useMemo(() => (impact && impactShown ? impactFocus(impact, impactShown) : undefined), [impact, impactShown]);
   const deployments = useMemo(() => (graph && run.data ? deploymentsOf(run.data, graph, release) : undefined), [graph, run.data, release]);
   const timeline = useMemo(() => (jobs.data && view === "timeline" ? buildTimeline(jobs.data, graph, release?.phases) : null), [jobs.data, graph, release, view]);
   const source = useMemo(() => {
@@ -133,16 +144,25 @@ export function RunExplorer({ env, run: ref, route }: Props) {
   const activePhase = view === "overview" ? (route.phase ?? phaseOfNode(selectedNode?.key)) : undefined;
 
   const go = (next: Partial<Route>) => {
-    window.location.hash = routeToHash({ run: ref, view: route.view, phase: route.phase, attempt, ...next });
+    window.location.hash = routeToHash({ run: ref, view: route.view, phase: route.phase, attempt, impact: route.impact, base: route.base, q: route.q, ...next });
   };
-  // Another attempt has other jobs (other ids, logs and results): keep only the view.
+  // Another attempt has other jobs (other ids, logs and results): keep only the view (and that impact is shown).
   const selectAttempt = (n: number) =>
-    go({ attempt: n === latest.data?.run_attempt ? undefined : n, phase: undefined, call: undefined, jobId: undefined, log: undefined, step: undefined, line: undefined });
+    go({
+      attempt: n === latest.data?.run_attempt ? undefined : n,
+      phase: undefined,
+      call: undefined,
+      jobId: undefined,
+      log: undefined,
+      step: undefined,
+      line: undefined,
+      impact: route.impact ? "all" : undefined,
+    });
   // The open log's place (step and line), kept when switching views so the user does not lose it.
   const logPlace = selectedJob && log ? { log, step, line } : {};
   // A link into the selected job's log that keeps the run, view, phase and call.
   const placeHref = (place: { step?: number; line?: number }) =>
-    routeToHash({ run: ref, view: route.view, phase: activePhase, call: route.call, jobId: selectedJob?.id, log: true, attempt, ...place });
+    routeToHash({ run: ref, view: route.view, phase: activePhase, call: route.call, jobId: selectedJob?.id, log: true, attempt, impact: route.impact, base: route.base, q: route.q, ...place });
   const logLinks = { line: (n: number) => placeHref({ step, line: n }), step: (n: number) => placeHref({ step: n }) };
   const selectJob = (job: Job) => {
     setNodeKey(undefined);
@@ -163,6 +183,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
       go({ jobId: undefined });
     }
   };
+  const openImpact = () => go({ view: "graph", phase: undefined, call: undefined, impact: "all", jobId: selectedJob?.id, ...logPlace });
   const selectPhase = (id: string) => go({ phase: id === activePhase ? undefined : id, call: undefined, jobId: undefined, log: undefined });
   const refresh = () => {
     void latest.refetch();
@@ -264,19 +285,30 @@ export function RunExplorer({ env, run: ref, route }: Props) {
           aria-selected={view === "overview"}
           disabled={!release}
           title={overview && "unavailable" in overview ? overview.unavailable : undefined}
-          onClick={() => go({ view: undefined, phase: phaseOfNode(selectedNode?.key) ?? route.phase, jobId: selectedJob?.id, ...logPlace })}
+          onClick={() => go({ view: undefined, phase: phaseOfNode(selectedNode?.key) ?? route.phase, jobId: selectedJob?.id, impact: undefined, base: undefined, q: undefined, ...logPlace })}
         >
           Release overview
         </button>
-        <button role="tab" aria-selected={view === "graph"} onClick={() => go({ view: "graph", phase: undefined, call: undefined, jobId: selectedJob?.id, ...logPlace })}>
+        <button role="tab" aria-selected={view === "graph"} onClick={() => go({ view: "graph", phase: undefined, call: undefined, jobId: selectedJob?.id, base: undefined, q: undefined, ...logPlace })}>
           Execution graph (all jobs)
         </button>
-        <button role="tab" aria-selected={view === "timeline"} onClick={() => go({ view: "timeline", phase: undefined, call: undefined, jobId: selectedJob?.id, ...logPlace })}>
+        <button role="tab" aria-selected={view === "timeline"} onClick={() => go({ view: "timeline", phase: undefined, call: undefined, jobId: selectedJob?.id, impact: undefined, base: undefined, q: undefined, ...logPlace })}>
           Timeline
         </button>
-        <button role="tab" aria-selected={view === "source"} onClick={() => go({ view: "source", phase: undefined, call: undefined, jobId: selectedJob?.id, ...logPlace })}>
+        <button role="tab" aria-selected={view === "source"} onClick={() => go({ view: "source", phase: undefined, call: undefined, jobId: selectedJob?.id, impact: undefined, base: undefined, q: undefined, ...logPlace })}>
           Workflow source
         </button>
+        <button role="tab" aria-selected={view === "compare"} onClick={() => go({ view: "compare", phase: undefined, call: undefined, jobId: selectedJob?.id, impact: undefined, q: undefined, ...logPlace })}>
+          Compare
+        </button>
+        <button role="tab" aria-selected={view === "search"} onClick={() => go({ view: "search", phase: undefined, call: undefined, jobId: selectedJob?.id, impact: undefined, base: undefined, ...logPlace })}>
+          Search
+        </button>
+        {impact && impact.failures.length > 0 && !impactShown && (
+          <button type="button" className="investigate" onClick={openImpact} data-testid="investigate-failure">
+            Investigate failure
+          </button>
+        )}
         {overview && "unavailable" in overview && (
           <span className="muted" data-testid="overview-unavailable">
             Release overview unavailable: {overview.unavailable}
@@ -284,8 +316,38 @@ export function RunExplorer({ env, run: ref, route }: Props) {
         )}
       </div>
 
-      <section className="panel graph-panel" aria-label={view === "overview" ? "Release overview" : view === "timeline" ? "Timeline" : view === "source" ? "Workflow source" : "Execution graph"} id="graph">
-        {view === "timeline" && jobs.isSuccess && timeline && jobs.data.length > 0 ? (
+      <section className="panel graph-panel" aria-label={VIEW_NAME[view]} id="graph">
+        {view === "compare" ? (
+          <RunCompare
+            env={env}
+            runRef={ref}
+            latest={latest.data}
+            attempt={shownAttempt}
+            routeAttempt={attempt}
+            base={route.base}
+            onSelectBase={(b) => go({ base: b, jobId: undefined, log: undefined, step: undefined, line: undefined })}
+            onSelectJob={(job) => selectJob(job)}
+            graphHref={(jobId) => routeToHash({ run: ref, view: "graph", attempt, jobId })}
+            stepHref={(job, n) => routeToHash({ run: ref, view: "compare", attempt, base: route.base, jobId: job.id, step: n })}
+          />
+        ) : view === "search" && jobs.isSuccess ? (
+          <RunSearch
+            env={env}
+            runRef={ref}
+            attemptKey={`${ref.owner}/${ref.repo}/${ref.runId}/${shownAttempt}`}
+            jobs={jobs.data}
+            graph={graph}
+            impact={impact}
+            query={route.q ?? ""}
+            onQuery={(q) => go({ q })}
+            links={{
+              job: (jobId) => routeToHash({ run: ref, view: "search", attempt, q: route.q, jobId }),
+              step: (job, n) => routeToHash({ run: ref, view: "search", attempt, q: route.q, jobId: job.id, step: n }),
+              line: (job, n) => routeToHash({ run: ref, view: "search", attempt, q: route.q, jobId: job.id, line: n }),
+              log: (job) => routeToHash({ run: ref, view: "search", attempt, q: route.q, jobId: job.id, log: true }),
+            }}
+          />
+        ) : view === "timeline" && jobs.isSuccess && timeline && jobs.data.length > 0 ? (
           <>
             <header className="panel-head">
               <h3>Timeline</h3>
@@ -335,6 +397,21 @@ export function RunExplorer({ env, run: ref, route }: Props) {
                 <h3 id="graph-heading">Execution graph</h3>
                 <Evidence graph={graph} inProgress={r.status !== "completed"} />
               </header>
+              {impact && impactShown && (
+                <FailureImpact
+                  impact={impact}
+                  graph={graph}
+                  selected={impactShown}
+                  selectedJobId={selectedJob?.id}
+                  onSelect={(k) => go({ impact: k })}
+                  onClose={() => go({ impact: undefined })}
+                  onSelectNode={selectNode}
+                  onSelectJob={(job) => selectJob(job)}
+                  stepHref={(job, n) => routeToHash({ run: ref, view: route.view, jobId: job.id, step: n, attempt, impact: route.impact })}
+                  compareHref={routeToHash({ run: ref, view: "compare", attempt })}
+                  searchHref={routeToHash({ run: ref, view: "search", attempt })}
+                />
+              )}
               <GraphCanvas
                 graph={graph}
                 lanes={rawLanes}
@@ -344,6 +421,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
                 onSelectNode={selectNode}
                 onSelectJob={(job) => selectJob(job)}
                 annotations={release ? { roles: release.roles, gates: release.gates } : undefined}
+                focus={focus}
               />
             </>
           )
@@ -394,7 +472,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
               selectedStep={step}
             />
           ) : (
-            <FailureOverview graph={graph} onSelect={selectNode} />
+            <FailureOverview graph={graph} onSelect={selectNode} onInvestigate={impact?.failures.length && !impactShown ? openImpact : undefined} />
           )}
         </div>
       )}
@@ -402,9 +480,9 @@ export function RunExplorer({ env, run: ref, route }: Props) {
       {selectedJob && log && (
         <div className="log-wrap">
           <a href="#graph" className="back-to-graph" onClick={(e) => (e.preventDefault(), document.getElementById("graph")?.scrollIntoView())}>
-            ↑ Back to the {view === "overview" ? "release overview" : view === "timeline" ? "timeline" : view === "source" ? "workflow source" : "graph"}
+            ↑ Back to the {VIEW_NAME[view].toLowerCase()}
           </a>
-          <LogPanel env={env} jobRef={{ ...ref, jobId: selectedJob.id }} job={selectedJob} line={line} step={step} links={logLinks} />
+          <LogPanel env={env} jobRef={{ ...ref, jobId: selectedJob.id }} job={selectedJob} line={line} step={step} links={logLinks} highlight={view === "search" ? route.q : undefined} />
         </div>
       )}
       {jobId !== undefined && jobs.isSuccess && !selectedJob && (
@@ -423,7 +501,7 @@ function attemptQuery(env: Environment, ref: RunRef, n: number) {
     queryKey: ["run", env.mode, ref.owner, ref.repo, ref.runId, "attempt", n],
     queryFn: async () => {
       const r = await env.client.getRun(ref, n);
-      if (r.run_attempt !== n) throw new Error(`GitHub returned attempt ${r.run_attempt} when attempt ${n} was requested.`);
+      if (r.run_attempt !== n) throw new AttemptMismatchError(n, r.run_attempt);
       return r;
     },
     staleTime: 60_000,
@@ -568,7 +646,7 @@ function Evidence({ graph, inProgress }: { graph: NonNullable<ReturnType<typeof 
   );
 }
 
-function FailureOverview({ graph, onSelect }: { graph: NonNullable<ReturnType<typeof graphFor>>; onSelect(node: GraphNode): void }) {
+function FailureOverview({ graph, onSelect, onInvestigate }: { graph: NonNullable<ReturnType<typeof graphFor>>; onSelect(node: GraphNode): void; onInvestigate?(): void }) {
   const failing = graph.nodes.filter((n) => n.status === "failure" || n.status === "timed_out" || n.status === "cancelled");
   const running = graph.nodes.filter((n) => n.status === "in_progress" || n.status === "queued" || n.status === "waiting");
   return (
@@ -585,6 +663,11 @@ function FailureOverview({ graph, onSelect }: { graph: NonNullable<ReturnType<ty
           </li>
         ))}
       </ul>
+      {onInvestigate && (
+        <button type="button" onClick={onInvestigate}>
+          Investigate failure impact
+        </button>
+      )}
     </section>
   );
 }

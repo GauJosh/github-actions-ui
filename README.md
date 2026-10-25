@@ -41,6 +41,9 @@ This tool answers those questions from the data GitHub already has. GitHub remai
 | **Run attempts** | Switch between attempt 1, 2, 3… of a re-run workflow. Each attempt shows its own jobs, results, timings and logs. |
 | **Workflow source** | The workflow files and called workflows the run used, at their exact revisions, with inputs. Values that look like secrets are hidden. |
 | **Run statistics** | Duration, total job time, slowest jobs and the deployments in the run. |
+| **Failure impact** | For each failure: what it needed, which jobs did not run because of it, and which ran anyway. Jobs skipped by their own conditions are kept apart. |
+| **Compare runs** | This run against a previous success or another attempt: jobs that changed outcome, renamed or added jobs, slower jobs, commits, workflow-file and dependency changes, and a log diff for any job. |
+| **Search** | One field across job and step names, workflow source, failures and the logs of the jobs you choose, saying exactly how much of each log was searched. |
 
 <details>
 <summary><b>More screenshots</b></summary>
@@ -155,6 +158,7 @@ https://github.com/OWNER/REPO/actions/runs/123456789/attempts/2
 - Switch to the **Execution graph** to see the full dependency structure, or the **Timeline** to see where the time went.
 - If the run was re-run, pick an **attempt** under the run title to inspect an earlier one.
 - **Workflow source** shows exactly which workflow files, and which revisions of them, produced the run.
+- **Investigate failure** outlines each failure's path on the graph. **Compare** sets this run against a previous success or another attempt, and **Search** finds a message across jobs, steps and logs.
 
 Every view, job, step and log line has its own URL, so you can paste a link to the exact failing line into a chat or an issue. Links contain no credentials.
 

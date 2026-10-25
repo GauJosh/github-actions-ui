@@ -31,7 +31,9 @@ const server = setupServer(
       ? HttpResponse.json({ jobs: [{ id: 12, run_attempt: 1 }] })
       : HttpResponse.json({ jobs: [{ id: 11, run_attempt: 1 }] }, { headers: { Link: '<https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs?page=2>; rel="next"' } }),
   ),
-  http.get("https://api.github.com/repos/o/r/actions/runs/7/attempts/9", () => HttpResponse.json({ message: "Not Found" }, { status: 404 })),
+  // Attempt 2 lists a job GitHub reports as run in attempt 1 (carried over by a partial re-run).
+  http.get("https://api.github.com/repos/o/r/actions/runs/7/attempts/2/jobs", () => HttpResponse.json({ jobs: [{ id: 11, run_attempt: 1 }, { id: 21, run_attempt: 2 }] })),
+  http.get("https://api.github.com/repos/o/r/actions/runs/7/attempts/9",() => HttpResponse.json({ message: "Not Found" }, { status: 404 })),
   http.get("https://api.github.com/search/repositories", () => HttpResponse.json({ total_count: 1, incomplete_results: false, items: [{ full_name: "acme/app" }] })),
   http.get("https://api.github.com/repos/acme/app", () => HttpResponse.json({ full_name: "acme/app" })),
   http.get("https://api.github.com/repos/o/r/actions/runs/401", () => new HttpResponse(null, { status: 401 })),
@@ -109,6 +111,23 @@ describe("live GitHub client", () => {
     ]);
     const error = await live.getRun(ref, 9).catch((e: unknown) => e);
     expect((error as GitHubError).failure).toEqual({ kind: "not-found-or-no-permission" });
+  });
+
+  it("reads an earlier attempt's own jobs, not the latest, and keeps each job's reported attempt as GitHub sent it", async () => {
+    expect((await live.getJobs(ref, 1)).map((j) => j.id)).toEqual([11, 12]);
+    expect((await live.getJobs(ref)).map((j) => j.id)).toEqual([1, 2]);
+    // A job listed in attempt 2 but run in attempt 1 is returned as reported, so the comparison can label it.
+    expect((await live.getJobs(ref, 2)).map((j) => [j.id, j.run_attempt])).toEqual([
+      [11, 1],
+      [21, 2],
+    ]);
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+      "GET https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs?per_page=100",
+      "GET https://api.github.com/repos/o/r/actions/runs/7/attempts/1/jobs?page=2",
+      "GET https://api.github.com/repos/o/r/actions/runs/7/jobs?filter=latest&per_page=100",
+      "GET https://api.github.com/repos/o/r/actions/runs/7/jobs?page=2",
+      "GET https://api.github.com/repos/o/r/actions/runs/7/attempts/2/jobs?per_page=100",
+    ]);
   });
 
   it.each([

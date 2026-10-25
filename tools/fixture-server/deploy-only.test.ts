@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { buildHierarchyGraph } from "../../src/domain/graph/hierarchy";
 import { layoutGrouped } from "../../src/domain/graph/layout";
+import { analyzeImpact } from "../../src/domain/insights/impact";
 import { readWorkflowDefinition, type WorkflowDefinition } from "../../src/domain/graph/workflow-definition";
 import { buildOverview, type ReleaseOverview } from "../../src/domain/phases/phases";
 import type { Job, Run } from "../../src/domain/types";
@@ -64,6 +65,31 @@ describe("deployment-only run with a declared CI call that has no job in the run
     // Phases come from the environments this workflow declares, whatever they are called; nothing named ci.
     expect(overview.phases.map((p) => p.name)).toEqual(["Before deployment", "blue", "canary-eu", "live"]);
     expect(overview.phases.every((p) => p.nodeKeys.length > 0)).toBe(true);
+  });
+
+  it("failure impact without a CI stage: traced through deployment jobs only, never through the declared CI call", async () => {
+    const r = byId.get(990009001)!;
+    const { graph: before } = await analyse(r);
+    // Fail the first job that others need, and mark everything below it skipped, as GitHub would.
+    const failing = before.nodes.find((n) => before.edges.some((e) => e.from === n.key))!;
+    const below = new Set<string>();
+    for (let frontier = [failing.key]; frontier.length; ) {
+      frontier = before.edges.filter((e) => frontier.includes(e.from) && !below.has(e.to)).map((e) => e.to);
+      frontier.forEach((k) => below.add(k));
+    }
+    const ids = (keys: Set<string> | string[]) => new Set(before.nodes.filter((n) => [...keys].includes(n.key)).flatMap((n) => n.members.map((m) => m.job.id)));
+    const failIds = ids([failing.key]);
+    const skipIds = ids(below);
+    const jobs = r.jobs.map((j) =>
+      failIds.has(j.id as number) ? { ...j, conclusion: "failure" } : skipIds.has(j.id as number) ? { ...j, conclusion: "skipped", steps: [] } : j,
+    );
+    const { graph } = await analyse(r, jobs);
+    const impact = analyzeImpact(graph, { status: "completed", conclusion: "failure" });
+    expect(impact.failures.map((f) => f.key)).toEqual([failing.key]);
+    const downstream = impact.failures[0]!.downstream;
+    expect(downstream.length).toBe(below.size);
+    expect(downstream.every((d) => d.reason === "blocked" || d.reason === "possibly")).toBe(true);
+    expect(JSON.stringify(impact)).not.toMatch(/def:ci\b/);
   });
 
   it("several independent entry points and a parallel branch, from `needs` only", async () => {

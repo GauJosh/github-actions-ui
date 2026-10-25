@@ -157,11 +157,15 @@ export class LogStore implements ViewSource {
     for (let n = 0; n < count; n++) scanner.push(this.line(n));
     this.classify();
     const c = this.classified;
+    // Stronger evidence first: a log with many weak text matches early on must not crowd out an annotation or a
+    // failure signature further down (e.g. in the middle of a large log). Then back in log order.
     const evidence: EvidenceLine[] = [];
-    for (let n = 0; n < c.count && evidence.length < MAX_EVIDENCE; n++) {
-      const rank = evidenceRank(c.kinds[n]!, c.reasons[n]!);
-      if (rank >= 0) evidence.push({ line: n, rank });
+    for (let tier = 0; tier <= 4 && evidence.length < MAX_EVIDENCE; tier++) {
+      for (let n = 0; n < c.count && evidence.length < MAX_EVIDENCE; n++) {
+        if (evidenceRank(c.kinds[n]!, c.reasons[n]!) === tier) evidence.push({ line: n, rank: tier });
+      }
     }
+    evidence.sort((x, y) => x.line - y.line);
     return { ...scanner.result(count), evidence };
   }
 

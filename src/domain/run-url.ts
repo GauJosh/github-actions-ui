@@ -30,9 +30,10 @@ export function parseRepo(input: string): RepoRef | null {
  * In-app location, kept in the URL fragment. It never contains credentials.
  * - `#/` repositories
  * - `#/repos/OWNER/REPO?status=…&branch=…&event=…&workflow=…` the run list
- * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph|timeline|source][&attempt=N]`
+ * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph|timeline|source|compare|search][&attempt=N][&impact=all|NODE][&base=RUN.N][&q=TEXT]`
  *   a run: its selected phase, an opened reusable-workflow call, a selected job, its log opened at a step or a
- *   line, the view, and the run attempt (absent: the latest attempt)
+ *   line, the view, the run attempt (absent: the latest attempt), the failure impact shown on the graph, the
+ *   baseline of a comparison (a run and an explicit attempt), and the search text
  */
 export type Route = {
   repo?: RepoRef;
@@ -48,10 +49,17 @@ export type Route = {
   view?: RunView;
   /** A run attempt (1-based). Absent: the run's latest attempt. */
   attempt?: number;
+  /** Failure impact on the execution graph: every failure ("all"), or one failure's graph node key. */
+  impact?: string;
+  /** The baseline of a comparison: always an explicit run and attempt, so the comparison never shifts. */
+  base?: { runId: number; attempt: number };
+  /** Search text (the search view), also highlighted in a log opened from a result. */
+  q?: string;
 };
 
 /** A run's views besides the default release overview. */
-export type RunView = "graph" | "timeline" | "source";
+export type RunView = "graph" | "timeline" | "source" | "compare" | "search";
+const VIEWS: RunView[] = ["graph", "timeline", "source", "compare", "search"];
 
 export function routeToHash(route: Route): string {
   if (route.run) {
@@ -67,7 +75,15 @@ export function routeToHash(route: Route): string {
       if (route.line !== undefined) hash += `/L${route.line}`;
       else if (route.log && route.step === undefined) hash += "/log";
     }
-    const query = [route.view && `view=${route.view}`, route.attempt && `attempt=${route.attempt}`].filter(Boolean).join("&");
+    const query = [
+      route.view && `view=${route.view}`,
+      route.attempt && `attempt=${route.attempt}`,
+      route.impact && `impact=${encodeURIComponent(route.impact)}`,
+      route.base && `base=${route.base.runId}.${route.base.attempt}`,
+      route.q && `q=${encodeURIComponent(route.q)}`,
+    ]
+      .filter(Boolean)
+      .join("&");
     return query ? `${hash}?${query}` : hash;
   }
   if (route.repo) {
@@ -107,9 +123,15 @@ export function parseHash(hash: string): Route {
     }
     const q = new URLSearchParams(m[10] ?? "");
     const view = q.get("view");
-    if (view === "graph" || view === "timeline" || view === "source") route.view = view;
+    if (VIEWS.includes(view as RunView)) route.view = view as RunView;
     const attempt = Number(q.get("attempt"));
     if (Number.isInteger(attempt) && attempt > 0) route.attempt = attempt;
+    const impact = q.get("impact");
+    if (impact) route.impact = impact;
+    const base = /^(\d+)\.(\d+)$/.exec(q.get("base") ?? "");
+    if (base && Number(base[2]) > 0) route.base = { runId: Number(base[1]), attempt: Number(base[2]) };
+    const text = q.get("q");
+    if (text) route.q = text;
     return route;
   }
   m = REPO_HASH.exec(hash);

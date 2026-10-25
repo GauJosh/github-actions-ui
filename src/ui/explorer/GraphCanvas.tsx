@@ -110,6 +110,18 @@ function initialView(layout: Layout, size: Size, ordered: GraphNode[]): View {
   return { k, x: Math.min(16, size.w / 2 - (b.x + b.width / 2) * k), y: Math.min(16, size.h / 2 - (b.y + b.height / 2) * k) };
 }
 
+/** A node's part in the failure impact shown on the graph. */
+export type FocusRole = "failed" | "upstream" | "blocked" | "possibly" | "ran";
+export const FOCUS_LABEL: Record<FocusRole, string> = {
+  failed: "failed",
+  upstream: "upstream of a failure",
+  blocked: "not run because of a failure",
+  possibly: "possibly not run because of a failure",
+  ran: "ran despite a failure",
+};
+/** Nodes and edges to emphasise (the rest stays visible, faded); `reveal` is brought into view when it changes. */
+export type GraphFocus = { roles: Map<string, FocusRole>; edges: Set<string>; reveal?: string };
+
 type Props = {
   graph: RunGraph;
   selectedKey?: string;
@@ -130,9 +142,11 @@ type Props = {
    * by its own dependencies. Nodes without a group are placed between the frames. Takes precedence over `columns`.
    */
   groups?: Map<string, string>;
+  /** Failure impact: takes over emphasis from the selection (the selected job keeps its outline). */
+  focus?: GraphFocus;
 };
 
-export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, onSelectJob, annotations, label, fitContent, lanes, columns, groups }: Props) {
+export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, onSelectJob, annotations, label, fitContent, lanes, columns, groups, focus }: Props) {
   const viewport = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [view, setView] = useState<View>({ x: 0, y: 0, k: 1 });
@@ -235,6 +249,11 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
     setRevealedKey(selectedKey);
     if (selectedKey) reveal(selectedKey);
   }
+  const [revealedFocus, setRevealedFocus] = useState(focus?.reveal);
+  if (focus?.reveal !== revealedFocus) {
+    setRevealedFocus(focus?.reveal);
+    if (focus?.reveal) reveal(focus.reveal);
+  }
 
   /** One pan step: a fifth of the visible area, between 60 and 180 px, so each press moves a predictable amount. */
   const pan = useCallback(
@@ -264,7 +283,15 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
 
   // Relationships of the selection, including those drawn through a junction.
   const junctions = useMemo(() => new Map(layout.junctions.map((j) => [j.id, j])), [layout]);
+  const focusEdge = (e: LaidEdge) => {
+    const j = e.junction ? junctions.get(e.junction) : undefined;
+    if (!j) return focus!.edges.has(`${e.from}->${e.to}`);
+    // A junction line stands for several pairs: emphasised when one of its pairs is on the path.
+    if (e.from.startsWith("junction:")) return j.sources.some((s) => focus!.edges.has(`${s}->${e.to}`));
+    return j.targets.some((t) => focus!.edges.has(`${e.from}->${t}`));
+  };
   const edgeRelated = (e: LaidEdge) => {
+    if (focus) return focusEdge(e);
     if (!selectedKey) return false;
     if (e.from === selectedKey || e.to === selectedKey) return true;
     const j = e.junction ? junctions.get(e.junction) : undefined;
@@ -274,7 +301,7 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
     return false;
   };
   const related = new Set<string>();
-  if (selectedKey) {
+  if (selectedKey && !focus) {
     for (const e of graph.edges) {
       if (e.from === selectedKey) related.add(e.to);
       if (e.to === selectedKey) related.add(e.from);
@@ -322,13 +349,14 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
       </div>
       <div
         ref={viewport}
-        className={`graph-viewport${expanded ? " expanded" : ""}${selectedKey && !allEdges ? " focusing" : ""}${panning ? " panning" : ""}`}
+        className={`graph-viewport${expanded ? " expanded" : ""}${(selectedKey || focus) && !allEdges ? " focusing" : ""}${panning ? " panning" : ""}`}
         style={maxHeight ? { height: maxHeight } : undefined}
         tabIndex={0}
         role="group"
         aria-label={`${label ?? "Execution graph"}: ${graph.nodes.length} nodes, ${graph.edges.length} dependency edges`}
         data-testid="graph-viewport"
         data-edge-mode={allEdges ? "all" : "focused"}
+        data-focus={focus ? "impact" : undefined}
         onKeyDown={onKeyDown}
         onPointerDown={(e) => {
           // Primary button only; the pan buttons are not a drag surface.
@@ -389,7 +417,7 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
               const hl = edgeRelated(e);
               const cls = [
                 "edge",
-                hl ? "hl" : selectedKey && !allEdges ? "faded" : "",
+                hl ? (focus ? "hl impact" : "hl") : (selectedKey || focus) && !allEdges ? "faded" : "",
                 target === "skipped" || target === "not_run" ? "muted" : "",
                 e.junction ? "bundled" : "",
                 isCallEdge(e) ? "call" : "",
@@ -421,7 +449,8 @@ export function GraphCanvas({ graph, selectedKey, selectedJobId, onSelectNode, o
               box={layout.boxes.get(node.key)!}
               selected={node.key === selectedKey}
               related={related.has(node.key) && node.key !== selectedKey}
-              dimmed={Boolean(selectedKey) && !allEdges && node.key !== selectedKey && !related.has(node.key)}
+              dimmed={focus ? !allEdges && !focus.roles.has(node.key) : Boolean(selectedKey) && !allEdges && node.key !== selectedKey && !related.has(node.key)}
+              impact={focus?.roles.get(node.key)}
               selectedJobId={selectedJobId}
               onSelectNode={onSelectNode}
               onSelectJob={onSelectJob}
@@ -464,6 +493,7 @@ function NodeView({
   onSelectJob,
   onFocus,
   annotations,
+  impact,
 }: {
   node: GraphNode;
   graph: RunGraph;
@@ -476,6 +506,7 @@ function NodeView({
   onSelectJob(job: Job, node: GraphNode): void;
   onFocus(): void;
   annotations?: NodeAnnotations;
+  impact?: FocusRole;
 }) {
   if (node.external) {
     const ext = node.external;
@@ -512,16 +543,17 @@ function NodeView({
     selected ? "selected" : "",
     related ? "related" : "",
     dimmed ? "dimmed" : "",
+    impact ? `impact-${impact}` : "",
     node.source === "job-name" && graph.evidence.kind === "workflow-file" ? "unmatched" : "",
   ].join(" ");
   return (
-    <div className={classes} style={{ left: box.x, top: box.y, width: box.width, height: box.height }} data-testid="graph-node" data-node-key={node.key} data-status={node.status}>
+    <div className={classes} style={{ left: box.x, top: box.y, width: box.width, height: box.height }} data-testid="graph-node" data-node-key={node.key} data-status={node.status} data-impact={impact}>
       <button
         className="gnode-main"
         onClick={() => onSelectNode(node)}
         onFocus={onFocus}
         aria-pressed={selected}
-        aria-label={`${node.label}: ${countsText(node)}${kind ? `, ${kind}` : ""}${duration !== undefined ? `, ${formatDuration(duration)}` : ""}`}
+        aria-label={`${node.label}: ${countsText(node)}${kind ? `, ${kind}` : ""}${duration !== undefined ? `, ${formatDuration(duration)}` : ""}${impact ? `, ${FOCUS_LABEL[impact]}` : ""}`}
       >
         <span className="gnode-title">
           <StatusIcon status={node.status} />

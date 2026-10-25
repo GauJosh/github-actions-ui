@@ -141,17 +141,19 @@ test("Errors & warnings: annotations versus text matches, step header as evidenc
   await page.getByRole("tab", { name: "Errors & warnings" }).click();
   await page.getByLabel("Context lines").selectOption("0");
   const shown = page.locator(".row[data-line]");
-  await expect(shown).toHaveCount(7);
-  await expect.poll(() => shown.evaluateAll((rows) => rows.map((r) => Number(r.getAttribute("data-line"))))).toEqual([38, 47, 48, 49, 51, 52, 53]);
+  // Line 52 is the sample's Node.js deprecation notice: a platform advisory, shown in Essential and All output but
+  // not among the job's errors and warnings.
+  await expect(shown).toHaveCount(6);
+  await expect.poll(() => shown.evaluateAll((rows) => rows.map((r) => Number(r.getAttribute("data-line"))))).toEqual([38, 47, 48, 49, 51, 53]);
   await expect(row(page, 53).locator(".kbadge")).toHaveText("exit code");
   await expect(row(page, 47).locator(".kbadge")).toHaveText("test failure");
-  await expect(row(page, 52).locator(".kbadge")).toHaveText("warning");
+  await expect(row(page, 52)).toHaveCount(0);
   await expect(row(page, 49).locator(".kbadge")).toHaveText("error?");
   await expect(row(page, 49).locator(".kbadge")).toHaveAttribute("title", /does not show that a command or the job failed/);
   await expect(row(page, 51).locator(".kbadge")).toHaveText("warning?");
   // Familiar words without a pattern match are not errors.
   await expect(row(page, 50)).toHaveCount(0);
-  await expect(page.getByTestId("log-view-summary")).toContainText("Errors & warnings: 1 error and 1 warning annotations, 2 failure signatures, 2 lines that only look like errors or warnings");
+  await expect(page.getByTestId("log-view-summary")).toContainText("Errors & warnings: 1 error and 0 warning annotations, 2 failure signatures, 2 lines that only look like errors or warnings");
 
   await page.getByLabel("Context lines").selectOption("1");
   await expect(row(page, 50)).toContainText("error handling module loaded");

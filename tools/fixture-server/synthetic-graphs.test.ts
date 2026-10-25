@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { buildRunGraph } from "../../src/domain/graph/build";
 import { readWorkflowDefinition } from "../../src/domain/graph/workflow-definition";
+import { compareRuns } from "../../src/domain/compare/runs";
+import { analyzeImpact } from "../../src/domain/insights/impact";
 import type { Job, Run } from "../../src/domain/types";
 import { syntheticGraphRuns } from "./synthetic-graphs.ts";
 
@@ -70,5 +72,44 @@ describe("synthetic scenarios", () => {
     expect(g.edges).toEqual([]);
     expect(g.declared?.map((d) => d.id)).toEqual(["build"]);
     expect(g.evidence.notes.join(" ")).toContain("Not drawn: `test` needs `build`");
+  });
+
+  it("release checks: two independent failures, their blocked jobs, and a condition-skipped job that is not impact", () => {
+    const impact = analyzeImpact(graphOf(990000108), { status: "completed", conclusion: "failure" });
+    expect(impact.failures.map((f) => [f.label, f.kind])).toEqual([
+      ["unit", "failure"],
+      ["integration", "timed_out"],
+    ]);
+    expect(impact.earliest?.key).toBe("def:unit");
+    const unit = impact.failures[0]!;
+    expect(unit.jobs.map((j) => [j.label, j.kind, j.step?.name])).toEqual([
+      ["shard 2", "failure", "Run tests"],
+      ["shard 3", "cancelled", undefined],
+    ]);
+    expect(unit.downstream.map((d) => [d.key, d.reason])).toEqual([
+      ["def:package", "blocked"],
+      ["def:publish", "blocked"],
+      ["def:rollback", "possibly"],
+      ["def:notify", "ran-anyway"],
+    ]);
+    expect(impact.failures[1]!.jobs[0]!.step).toBeUndefined();
+    expect(impact.unrelatedSkipped).toEqual(["def:docs"]);
+  });
+
+  it("release checks against its baseline: renamed job, added and removed jobs, slower shard, changed workflow", () => {
+    const side = (id: number) => {
+      const r = runs.get(id)!;
+      return { run: r.run as unknown as Run, attempt: 1, jobs: r.jobs as unknown as Job[], graph: graphOf(id), workflowText: r.workflow as string };
+    };
+    const c = compareRuns(side(990000109), side(990000108));
+    const by = (key: string) => c.jobs.find((j) => j.key === key)!;
+    expect(by("wf:integration")).toMatchObject({ change: "outcome", renamed: { from: "integration-tests", to: "integration" }, headStatus: "timed_out" });
+    expect(by("wf:integration").duration.trend).toBeUndefined(); // it timed out: not "slower"
+    expect(by("wf:unit#shard 3").change).toBe("added");
+    expect(by("wf:smoke").change).toBe("removed");
+    expect(by("wf:unit#shard 1").duration.trend).toBe("slower");
+    expect(c.counts).toMatchObject({ nowFailing: 2, added: 1, removed: 1, slower: 1 });
+    expect(c.workflow.file).toBe("changed");
+    expect(c.graph.removedEdges).toEqual([["package", "smoke"]]);
   });
 });

@@ -71,6 +71,28 @@ describe("hash routes", () => {
     expect(parseHash("#/runs/o/r/1?attempt=x&view=bogus")).toEqual({ run });
   });
 
+  it("round-trips a comparison baseline (always with an explicit attempt) and search text", () => {
+    const run = { owner: "o", repo: "r", runId: 1 };
+    const compare = { run, view: "compare" as const, attempt: 2, base: { runId: 1, attempt: 1 } };
+    expect(routeToHash(compare)).toBe("#/runs/o/r/1?view=compare&attempt=2&base=1.1");
+    expect(parseHash(routeToHash(compare))).toEqual(compare);
+    expect(parseHash("#/runs/o/r/1?view=compare&base=7")).toEqual({ run, view: "compare" });
+    expect(parseHash("#/runs/o/r/1?view=compare&base=7.0")).toEqual({ run, view: "compare" });
+    const search = { run, view: "search" as const, jobId: 4, line: 12, log: true, q: "Error: a&b" };
+    expect(routeToHash(search)).toBe("#/runs/o/r/1/jobs/4/L12?view=search&q=Error%3A%20a%26b");
+    expect(parseHash(routeToHash(search))).toEqual(search);
+  });
+
+  it("round-trips the failure impact shown on the graph, including a node key with separators", () => {
+    const run = { owner: "o", repo: "r", runId: 1 };
+    const all = { run, view: "graph" as const, impact: "all" };
+    expect(routeToHash(all)).toBe("#/runs/o/r/1?view=graph&impact=all");
+    expect(parseHash(routeToHash(all))).toEqual(all);
+    const one = { run, view: "graph" as const, jobId: 9, step: 3, log: true, impact: "def:cd/deploy-dev/deploy" };
+    expect(routeToHash(one)).toBe("#/runs/o/r/1/jobs/9/steps/3?view=graph&impact=def%3Acd%2Fdeploy-dev%2Fdeploy");
+    expect(parseHash(routeToHash(one))).toEqual(one);
+  });
+
   it("round-trips the repository run list with its filters", () => {
     const route = { repo: { owner: "o", repo: "r" }, filters: { status: "failure", branch: "feature/x", event: "push", workflowId: 7 } };
     expect(routeToHash(route)).toBe("#/repos/o/r?status=failure&workflow=7&branch=feature%2Fx&event=push");

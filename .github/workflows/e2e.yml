@@ -33,5 +33,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: playwright-results
-          path: test-results/
+          path: |
+            test-results/
+            playwright-report/results.json
           retention-days: 7

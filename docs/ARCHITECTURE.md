@@ -553,6 +553,104 @@ Everything here is computed in the browser from data the run view already loads:
   - What `…/attempts/{n}/jobs` lists after "Re-run failed jobs": whether jobs that were not re-run are included, and with which `run_attempt`. The UI labels such jobs rather than assuming either way.
   - Whether `referenced_workflows` can differ between attempts. The workflow tree is loaded per attempt to be safe.
 
+### 11.7 Implementation notes: failure impact explorer (for review)
+
+**Data.** No new API calls. `analyzeImpact` (`src/domain/insights/impact.ts`) works on the run graph of the selected attempt: GitHub's job results plus the workflow file's `needs:`. The graph node now also carries the job's raw `if:` (`condition`).
+
+**Rules, kept apart in the UI.**
+- *Failure* (fact): a job GitHub reports as failed, timed out or cancelled. The failed step is the one GitHub's step data marks; when there is none, that is said.
+- *Upstream* (verified): ancestors through `needs:` edges only. Nothing is inferred from timing.
+- *Not run because of it* (GitHub's rule): a skipped job whose `if:` has no status function, so GitHub applied `success()`, and one of whose needs failed or was itself blocked.
+- *Possibly*: a skipped job whose own condition uses `always()`, `failure()`, `cancelled()` or `success()`, or that sits below such a job. GitHub does not report how a condition evaluated.
+- *Ran anyway* or *ran because of the failure* (a recovery condition): the failure is not carried below these jobs.
+- *Not impact*: a skipped job downstream of no failure. It is listed separately, never counted.
+- *Earliest observed failure*: the first failed job or step to complete. It is always called an observed order, not a cause.
+- *Unknown*: without the workflow file, for jobs not matched to it, inside a call shown as one node, and why a job was cancelled. Each is stated.
+
+**UI.** "Investigate failure" opens the execution graph with `?impact=all`, or `impact=<node key>` for one failure. The panel above the graph lists each failure with links to the job and to the failed step's log. The graph keeps every node: the failure's path is outlined and unrelated jobs are faded. "Show all edges" removes the fading. Switching failures keeps the graph and the selected job.
+
+### 11.8 Implementation notes: comparison, pipeline-wide search, log comparison and classification (for review)
+
+**Shared pieces.**
+- `src/domain/compare/diff.ts` is a line diff (Myers, with the common prefix and suffix trimmed first). It is capped by edit count. Past the cap it reports "too large", and callers fall back to listing lines found in only one side.
+- `src/logs/pool.ts` is a bounded set of job logs, each in its own worker (`LogLoader`), with two loading at a time.
+  - Search allows up to 30 logs; a log comparison opens 2.
+  - Every worker is terminated when the view closes or the attempt changes.
+  - Each log keeps the loader's policies: tail first, the A8 large-log limit, retries and worker isolation.
+- New worker requests:
+  - `find`: matching lines, optionally of some kinds, as excerpts of at most 240 characters, capped per log;
+  - `fingerprint`: normalised line hashes of the full log, or of one step's lines;
+  - `diff`: the baseline's hashes diffed against this log, inside this log's worker.
+  - Log text never leaves the workers except the lines on screen. The pure functions are in `src/domain/logs/queries.ts`.
+
+**Run-to-run comparison** (`?view=compare&base=RUN.ATTEMPT`, `src/domain/compare/runs.ts`, `RunCompare.tsx`).
+- *One attempt per side.* Each side is loaded at an explicit attempt (`…/attempts/{n}` and `…/attempts/{n}/jobs`), so a side never mixes attempts.
+  - A job that GitHub lists in an attempt but reports with another `run_attempt` is called out on the job and in the notes.
+  - The baseline is stored as a run *and* an attempt, so a later re-run cannot change what is compared.
+  - If GitHub answers a request for attempt N with another attempt, that side is not shown and nothing is compared. The alert names both numbers: "GitHub returned attempt M when attempt N was requested, so it is not shown as attempt N. Try again, or choose another attempt." The run view loads attempts with the same check.
+- *Job matching.* Jobs are matched by workflow identity: the job id in the workflow file, plus the call path for reusable workflows, plus the matrix values or the called job's name.
+  - A changed display name is reported as a rename.
+  - Without a workflow file on one side, jobs are matched by name, and the match is labelled "matched by name only".
+  - Two unmatched jobs with the same three or more steps are offered as "possibly renamed (not certain)". They are never merged silently.
+- *Durations.* A job's duration is compared only when it ran to completion on both sides.
+  - When one side failed, both durations are shown but are never called slower or faster.
+  - The same rule applies to the run duration: when the two conclusions differ and one run failed or was cancelled, the run duration has no slower or faster trend.
+  - "Notably" slower or faster means at least 30 s *and* at least 25%.
+  - The run duration runs from the first job start to the last job end, and is noted to include approval waits.
+- *What else is compared:*
+  - steps, by name and occurrence;
+  - dependencies, as identities and edges from both workflow files;
+  - the workflow file text, as a diff;
+  - called workflows, by the commit each resolved to (`referenced_workflows`);
+  - environments, by the worst status of their jobs;
+  - commits, through `GET /repos/{o}/{r}/compare/{base}...{head}`. This is a new read-only call and the only new request.
+- *Wording.* A commit that appears only in one run is described as a difference, never as a cause. When both runs used the same commit, the summary says the difference came from something the API does not show.
+- *Drill-downs link to:* this run's job details and graph location, the failed step's log, the baseline job (at its attempt), and the log comparison.
+
+**Pipeline-wide search** (`?view=search&q=…`, `src/domain/search/run-search.ts`, `RunSearch.tsx`).
+- *One field, several sources.* It searches job names and workflow ids, step names, the workflow source the run used (step names, `uses:`, `run:` lines, `if:`, environments), and failure-impact facts. All of these are already loaded.
+- *Logs.* Logs of the failed and cancelled jobs are searched by default, or of every job with a log. Logs are downloaded only when a search needs them.
+- *Filters:* everything, jobs, steps, errors (logs), warnings (logs), all log lines, workflow source, failures.
+- *Matching.* Case-insensitive by default, with "match case" and "whole word". The URL applies the text after a pause, and a newer search supersedes an older one.
+- *Coverage.* Each log states what was searched:
+  - the complete log (with its line count);
+  - only the tail, for a log above the large-log limit, with a button to load and search it all;
+  - the part received before loading stopped;
+  - or nothing, with the reason (expired, unavailable, still loading, or beyond the 30-log limit).
+  - "No match in what was searched" is shown only for a log that was searched.
+- *Results.* A log result shows its line, its step (from step mapping, in complete logs) and the line kind.
+  - It opens the log at that line with the search text highlighted (the log panel's own search, set from the URL).
+  - A tail result opens the job's log, because its absolute line number is not known yet.
+
+**Log comparison** (from a job row in the comparison).
+- *What is compared.* The whole log, or one step when that step's name is unique in both jobs and was located in both logs. Approximate step boundaries are labelled.
+- *What is ignored.* Lines are compared without the runner timestamp, colour codes, times, ids, commit hashes, durations and temporary paths. Counts and exit codes are kept.
+  - "Essential output only" (the default) also leaves out runner setup, cleanup, control markers and the echo of step scripts.
+- *Display.* At most 600 lines of differences are shown, in hunks with 3 lines of context. Changed error lines are marked, and can be the only changes shown.
+  - Every line number links to its source log: this run's or the baseline's, at its attempt.
+- *Limits.*
+  - Only complete logs are compared: a log above the large-log limit asks to be loaded first, and an expired or missing log is reported.
+  - Jobs that were not matched by workflow job id are flagged as uncertain.
+  - While a comparison runs, both logs are held in their own workers. The baseline's worker returns only fingerprints, and the diff runs in this run's worker.
+
+**Classification (audit and changes)** (`src/domain/logs/classify.ts`).
+- *New failure signatures,* each anchored to a tool's exact format:
+  - package and dependency resolution (pip, pnpm, yarn, Maven, Gradle, Go modules, NuGet);
+  - failed builds (Maven goals, Gradle, cargo);
+  - container builds and daemon errors;
+  - a command that exited non-zero (including "The process '…' failed with exit code N", which has no ERROR prefix);
+  - unhandled .NET exceptions;
+  - Rust panics;
+  - stack frames for .NET (`in file:line N`), Ruby (`from file:N:in`) and Go goroutine traces.
+- *Fewer false positives:*
+  - `##[warning]` platform deprecation notices (Node.js action runtimes, deprecated workflow commands) become an `advisory` kind. They stay visible under Runner messages but are not counted as the job's warnings;
+  - text logged by tests in a `console.error` block;
+  - lines that say an error is expected or ignored;
+  - output inside runner job-setup groups.
+- *Workflow commands.* A raw `::error::` or `::warning::` line in the log is a workflow command that was not processed. It is shown as text, not as an annotation.
+- *Failure evidence.* The evidence collected for step mapping is now chosen strongest-first under its cap. An annotation or signature in the middle of a log with more than 20,000 weak matches is no longer dropped.
+- *Unchanged.* Classification never changes a line, never stands in for the job's conclusion, and every line keeps its reason.
+
 ## 12. Open risks (not validated)
 
 | Risk | Current state | Mitigation or plan |

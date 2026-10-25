@@ -46,7 +46,9 @@ test("s09 via the run-URL shortcut: failed job from API data, log on demand, tai
 
   await page.getByLabel("Search log").fill("checksum mismatch");
   await page.getByRole("button", { name: "Search", exact: true }).click();
-  await expect(page.getByTestId("search-summary")).toHaveText(`${expected.hits.length} matching lines`);
+  // The search runs in the worker over the whole 44 MB log (about 1.4 s on an idle machine, several times that on a
+  // loaded one), so it gets the same allowance as the test's other whole-log steps, not the default 5 s.
+  await expect(page.getByTestId("search-summary")).toHaveText(`${expected.hits.length} matching lines`, { timeout: 60_000 });
   // A new search goes to the first match; "previous" from the first wraps to the last. The line is kept in the URL.
   await expect(page).toHaveURL(new RegExp(`/jobs/${S09.jobId}/L${expected.hits[0]}$`));
   await expect(page.getByTestId("search-position")).toHaveText(`1 of ${expected.hits.length}`);

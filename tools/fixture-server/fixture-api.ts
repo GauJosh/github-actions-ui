@@ -3,6 +3,7 @@
 // runs, jobs, workflow files (Contents API) and job logs with HEAD and explicit byte ranges.
 // Read-only, local only, and never contacts GitHub. Refuses to serve anything if the prepared fixtures do
 // not match the lockfile.
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -111,7 +112,14 @@ function loadCorpus(root: string, decompress: (jobId: number, path: string) => B
   });
   logs.set(SYNTHETIC_LARGE.jobId, () => ({ size: SYNTHETIC_LARGE.bytes, read: syntheticLog }));
   for (const s of syntheticGraphRuns()) {
-    runs.set(s.run.id, { owner: SYNTHETIC_OWNER, repo: SYNTHETIC_REPO, run: s.run as RunJson, jobs: () => ({ total_count: s.jobs.length, jobs: s.jobs }), workflow: () => s.workflow });
+    runs.set(s.run.id, {
+      owner: SYNTHETIC_OWNER,
+      repo: SYNTHETIC_REPO,
+      run: s.run as RunJson,
+      jobs: () => ({ total_count: s.jobs.length, jobs: s.jobs }),
+      workflow: () => s.workflow,
+      ...(s.attempts && { attempts: new Map([...s.attempts].map(([n, a]) => [n, { run: a.run as RunJson, jobs: () => ({ total_count: a.jobs.length, jobs: a.jobs }) }])) }),
+    });
     for (const job of s.jobs) {
       const text = s.logs.get(job.id);
       logs.set(job.id, () => (text === undefined ? { missing: "No log for this job (skipped or not finished)" } : { size: Buffer.byteLength(text), read: (a, b) => Buffer.from(text).subarray(a, b) }));
@@ -379,6 +387,33 @@ export function createFixtureMiddleware(options: { repoRoot: string; lockPath: s
       if (typeof file !== "string") return send(res, file.status, { message: file.message });
       const content = Buffer.from(file, "utf8").toString("base64").replace(/.{60}/g, "$&\n");
       return send(res, 200, { type: "file", encoding: "base64", path: filePath, name: filePath.split("/").at(-1), content });
+    }
+
+    // Commits between two runs' commits (GitHub: GET …/compare/{base}...{head}). SYNTHETIC: both commits must be
+    // run commits of this repository; the commits in between are generated and clearly labelled.
+    m = /^\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(rest);
+    if (m) {
+      const [, baseSha, headSha] = m as unknown as [string, string, string];
+      const at = (sha: string) => repoRuns.find((r) => r.run.head_sha === sha)?.run;
+      const b = at(baseSha);
+      const h = at(headSha);
+      if (!b || !h) return send(res, 404, { message: "Not Found" });
+      if (baseSha === headSha) return send(res, 200, { status: "identical", ahead_by: 0, behind_by: 0, total_commits: 0, commits: [], html_url: `https://github.com/${owner}/${repo}/compare/${baseSha}...${headSha}` });
+      const ahead = String(h.created_at ?? "") >= String(b.created_at ?? "");
+      const commits = ahead
+        ? [1, 2].map((i) => ({
+            sha: createHash("sha1").update(`${baseSha}-${headSha}-${i}`).digest("hex"),
+            commit: { message: `[synthetic] Commit ${i} between the two runs`, author: { name: "synthetic-user", date: h.created_at } },
+          }))
+        : [];
+      return send(res, 200, {
+        status: ahead ? "ahead" : "behind",
+        ahead_by: commits.length,
+        behind_by: ahead ? 0 : 2,
+        total_commits: commits.length,
+        commits,
+        html_url: `https://github.com/${owner}/${repo}/compare/${baseSha}...${headSha}`,
+      });
     }
 
     m = /^\/actions\/jobs\/(\d+)\/logs$/.exec(rest);

@@ -19,6 +19,8 @@
   - **Environment grouping and grouped graph layout** (requested 2026-10-21 after promotion checks were grouped under DEV): environment provenance, same-name job matching, and one column per environment in the execution graph (ARCHITECTURE §11.3, environment evidence). Pushed.
   - **Run insights** (requested 2026-10-21): run statistics, execution timeline, workflow source explorer and per-run deployment records as DORA groundwork (ARCHITECTURE §11.5). Pushed. Historical metrics need the definitions listed there first.
   - **Workflow-adaptive graph and run attempts** (requested 2026-10-22): declared jobs with no job in the run are definition context, not nodes or phases; navigation between run attempts (ARCHITECTURE §11.6). Pushed.
+  - **Failure impact explorer** (requested 2026-10-23, feature 1 of the failure-investigation spec): failures, their verified upstream, and downstream jobs blocked by GitHub's skip rules, shown on the execution graph (ARCHITECTURE §11.7). Implemented and verified; awaiting the checkpoint commit.
+  - **Run comparison, pipeline-wide search, log comparison and classification** (requested 2026-10-23, features 2–4 of the same spec): Compare and Search views, the log diff, and classifier rules with regression cases (ARCHITECTURE §11.8). Implemented and verified; awaiting the checkpoint commit. Covers part of M5 (comparison); the M5 baseline tiers and its "no comparison" acceptance cases are not done.
   - M2's other log-exploration items (ANSI, groups, scaled scrolling, the worker cache) are still open. Q2 and Q10 remain open.
 - Commits and pushes each need approval.
 

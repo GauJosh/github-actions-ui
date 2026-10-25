@@ -9,7 +9,8 @@ export default defineConfig({
   testDir: "tests/e2e",
   timeout: 120_000,
   workers: 1,
-  reporter: [["list"]],
+  // The JSON report keeps every failure (test, error, location) even when the terminal output is filtered or cut.
+  reporter: [["list"], ["json", { outputFile: "playwright-report/results.json" }]],
   globalSetup: "./tests/e2e/global-setup.ts",
   use: { baseURL: `http://127.0.0.1:${PORT}` },
   projects: [

@@ -39,6 +39,7 @@ export const LINE_KINDS = [
   "section", // a `##[group]` header that is not a step header
   "runner", // a runner lifecycle message
   "control", // a runner control marker
+  "advisory", // a `##[warning]` annotation that is a platform deprecation or upgrade notice, not about the job's work
 ] as const;
 export type LineKind = (typeof LINE_KINDS)[number];
 
@@ -84,6 +85,19 @@ export const REASONS = [
   "text pattern: compiler or linter warning",
   "text pattern: structured log level warning",
   "output of a run: step (not classified further)",
+  "failure signature: package or dependency resolution failed",
+  "failure signature: build tool reported a failed build",
+  "failure signature: container build or daemon error",
+  "failure signature: a command exited with a non-zero code",
+  "failure signature: unhandled exception",
+  "failure signature: Rust panic",
+  "stack trace: Go goroutine trace",
+  "text pattern: workflow command printed as text (::error:: was not processed, so it is not an annotation)",
+  "text pattern: workflow command printed as text (::warning:: was not processed, so it is not an annotation)",
+  "runner annotation ##[warning]: platform deprecation or upgrade notice (not about this job's work)",
+  "text logged by a test (console block in test output): not treated as an error",
+  "mentions an expected or ignored error: not treated as one",
+  "inside a runner job-setup group",
 ] as const;
 export type Reason = (typeof REASONS)[number];
 
@@ -188,11 +202,23 @@ const SIGNATURE: Pattern[] = [
   [/^Exception in thread "[^"]*" [\w$.]+/, "failure signature: uncaught Java exception"],
   [/^\s*(?:Uncaught\s+)?(?:[\w$]+\.)*[A-Z]\w*(?:Error|Exception)(?::\s+\S|$)/, "failure signature: named exception (…Error: / …Exception:)"], // TypeError: …, java.lang.IllegalStateException: …
   [/^panic: |^fatal error: /, "failure signature: Go panic or fatal runtime error"],
-  [/:\d+(?::\d+)?: (?:fatal )?error:|\berror (?:TS|CS)\d+:|\berror\[E\d+\]|^\s+\d+:\d+\s+error\s+\S/, "failure signature: compiler or linter diagnostic"],
+  [/:\d+(?::\d+)?: (?:fatal )?error:|\berror (?:TS|CS|NU|MSB|NETSDK|FS|BC)\d+:|\berror\[E\d+\]|^\s+\d+:\d+\s+error\s+\S/, "failure signature: compiler or linter diagnostic"],
   [/^(?:\S+: )?(?:line \d+: )?\S+: command not found$/, "failure signature: shell command not found"],
   [/^make(?:\[\d+\])?: \*\*\* .*(?:Error \d+|Stop\.)$/, "failure signature: make target failed"],
   [/^npm (?:ERR!|error) /, "failure signature: npm error"],
   [/^fatal: \S/, "failure signature: fatal error reported by a tool (fatal: …)"],
+  [
+    /^\s*ERR_PNPM_[A-Z_]+\b|^error (?:Couldn't find package|An unexpected error occurred|Command failed with exit code \d+)|^ERROR: (?:Could not find a version that satisfies|No matching distribution found|Could not install packages|Failed building wheel|ResolutionImpossible|Cannot install)|Could not resolve dependencies for project|^Could not resolve all (?:files|dependencies|artifacts) for configuration|^go: .*(?:: not found|cannot find module providing package|missing go\.sum entry|checksum mismatch)/,
+    "failure signature: package or dependency resolution failed",
+  ],
+  [/^\[ERROR\] Failed to execute goal |^FAILURE: Build failed with an exception\.|^\* What went wrong:$|^error: could not compile `/, "failure signature: build tool reported a failed build"],
+  [/^(?:ERROR: |#\d+ ERROR: )?failed to solve: |^Error response from daemon: /, "failure signature: container build or daemon error"],
+  [/^Unhandled [Ee]xception[.:] \S/, "failure signature: unhandled exception"],
+  [/^thread '[^']*' panicked at /, "failure signature: Rust panic"],
+  [
+    /^(?:Error: )?The process '[^']+' failed with exit code [1-9]\d*|\breturned non-zero exit status [1-9]\d*|\bexited with (?:exit )?code [1-9]\d*\b/,
+    "failure signature: a command exited with a non-zero code",
+  ],
 ];
 const ERROR_TEXT: Pattern[] = [
   [/^\s*(?:error|ERROR|Error)(?:\s*\[[\w-]+\])?(?:\s*:|!)/, "text pattern: starts like an error message"],
@@ -201,12 +227,23 @@ const ERROR_TEXT: Pattern[] = [
   [/\blevel=(?:error|fatal)\b|"level"\s*:\s*"(?:error|fatal)"/, "text pattern: structured log level error"],
 ];
 // Stack traces. A frame line only counts after an exception or another frame, or as the start of one.
-const FRAME = /^\s+at (?:async )?\S.*(?:\)|:\d+(?::\d+)?)\s*\{?$|^\s+\.\.\. \d+ (?:more|common frames omitted)$/;
+const FRAME = /^\s+at (?:async )?\S.*(?:\)|:\d+(?::\d+)?| in \S+:line \d+)\s*\{?$|^\s+\.\.\. \d+ (?:more|common frames omitted)$|^\s+from \S+:\d+:in [`'].*'$/;
 const CAUSE = /^\s*(?:Caused by: |\[cause\]: )\S/;
 const TRACEBACK = /^\s*Traceback \(most recent call last\):$/;
 /** A line that an immediately following stack trace confirms as an exception message. */
 const EXCEPTION_LIKE = /^\s*(?:Uncaught\s+)?[\w$.]*(?:Error|Exception)\b/;
 const MAX_TRACE_LOOKBACK = 10;
+// Go: "goroutine 1 [running]:" then pairs of "pkg.Func(args)" and "\t/path/file.go:12 +0x1d".
+const GOROUTINE = /^goroutine \d+ \[[^\]]+\]:$/;
+const GO_FRAME = /^\t\S+\.go:\d+(?: \+0x[0-9a-f]+)?$|^(?:created by )?[\w./*()-]+\.[\w*()-]+\(.*\)(?: in goroutine \d+)?$/;
+/** A `##[warning]` about the platform rather than the job: deprecations and runner upgrades. */
+const ADVISORY =
+  /Node\.js \d+ actions are deprecated|The following actions (?:use|are running on) (?:a )?(?:deprecated )?Node\.js|The `(?:set-output|save-state|set-env|add-path)` command is deprecated|(?:is|are) deprecated and will be (?:removed|disabled)|ubuntu-latest (?:pipelines|label) will (?:use|be)/i;
+/** Prose that names an error as expected or ignored (tests, scripts that tolerate a failure). */
+const EXPECTED = /\bexpected (?:an? )?(?:error|failure|exception)\b|\((?:expected|ignored|allowed to fail)\)\s*$|\bignoring (?:the )?(?:error|failure)\b|\bcontinuing anyway\b|\berror is expected\b/i;
+/** A test runner's console block header (Jest prints the logged text indented below it). */
+const CONSOLE_BLOCK = /^(\s*)console\.(?:error|warn|log|info|debug)$/;
+const LOGGED_BY_TEST: Reason = "text logged by a test (console block in test output): not treated as an error";
 const MAX_PROPS = 100;
 const WARNING_TEXT: Pattern[] = [
   [/^\s*(?:warning|WARNING|Warning|WARN)(?:\[[\w-]+\])?(?:\s*:|!)/, "text pattern: starts like a warning message"],
@@ -251,7 +288,9 @@ export class LineClassifier {
   private completeStep = false;
   private prevText: string | null = null;
   private runLength = 0;
-  private trace: "none" | "python" | "frames" | "props" = "none";
+  private trace: "none" | "python" | "frames" | "props" | "go" = "none";
+  /** Inside a test runner's console block: the header's indent, or -1. */
+  private consoleIndent = -1;
   private propsLines = 0;
   /** The last line that a following stack trace would confirm as an exception message, or -1. */
   private candidate = -1;
@@ -279,6 +318,7 @@ export class LineClassifier {
       const marker = this.marker(n, text);
       if (marker) {
         this.trace = "none";
+        this.consoleIndent = -1;
         return marker;
       }
     }
@@ -287,8 +327,15 @@ export class LineClassifier {
       const echo = this.echo(g, text, coloured);
       if (echo) return echo;
     }
+    const quoted = this.consoleBlock(text);
+    if (quoted) return quoted;
     const traced = this.stackTrace(n, text);
     if (traced) return traced;
+    // Output inside a job-setup group (runner image, permissions, environment) is the runner's, whatever it says.
+    if (g?.setup) return ["runner", "inside a runner job-setup group", FOLD.none];
+    if (/^::error(?:\s[^:]*)?::/.test(text)) return ["error-text", "text pattern: workflow command printed as text (::error:: was not processed, so it is not an annotation)", FOLD.none];
+    if (/^::warning(?:\s[^:]*)?::/.test(text)) return ["warning-text", "text pattern: workflow command printed as text (::warning:: was not processed, so it is not an annotation)", FOLD.none];
+    if (EXPECTED.test(text)) return [this.usesStep ? "action-output" : "output", "mentions an expected or ignored error: not treated as one", FOLD.none];
     if (!g) {
       if (text === "Post job cleanup.") {
         this.postStep = true;
@@ -342,7 +389,11 @@ export class LineClassifier {
       return ["control", "runner control marker", FOLD.control];
     }
     if (text.startsWith("##[error]")) return ["error", /^##\[error\]Process completed with exit code \d+\.?\s*$/.test(text) ? "runner annotation ##[error] that only reports the exit code" : "runner annotation ##[error]", FOLD.none];
-    if (text.startsWith("##[warning]")) return ["warning", "runner annotation ##[warning]", FOLD.none];
+    if (text.startsWith("##[warning]")) {
+      return ADVISORY.test(text)
+        ? ["advisory", "runner annotation ##[warning]: platform deprecation or upgrade notice (not about this job's work)", FOLD.none]
+        : ["warning", "runner annotation ##[warning]", FOLD.none];
+    }
     if (text.startsWith("##[notice]")) return ["notice", "runner annotation ##[notice]", FOLD.none];
     if (text.startsWith("##[debug]")) return ["debug", "runner message ##[debug]", FOLD.none];
     if (text.startsWith("##[command]")) return ["command", "command echoed by an action ([command] prefix)", FOLD.none];
@@ -350,8 +401,30 @@ export class LineClassifier {
     return undefined;
   }
 
-  /** Stack-trace lines: a Python traceback up to its exception line, or JS/JVM frames, causes and error properties. */
+  /** Lines a test runner prints under `console.error` (etc.): text the test logged, not an error of the job. */
+  private consoleBlock(text: string): [LineKind, Reason, number] | undefined {
+    const header = CONSOLE_BLOCK.exec(text);
+    if (header) {
+      this.consoleIndent = header[1]!.length;
+      return ["output", LOGGED_BY_TEST, FOLD.none];
+    }
+    if (this.consoleIndent < 0) return undefined;
+    const indent = /^\s*/.exec(text)![0].length;
+    if (text.trim() === "" || indent > this.consoleIndent) return ["output", LOGGED_BY_TEST, FOLD.none];
+    this.consoleIndent = -1;
+    return undefined;
+  }
+
+  /** Stack-trace lines: a Python traceback up to its exception line, JS/JVM/.NET/Ruby frames, causes, error properties, or a Go goroutine trace. */
   private stackTrace(n: number, text: string): [LineKind, Reason, number] | undefined {
+    if (this.trace === "go") {
+      if (text === "" || GO_FRAME.test(text) || GOROUTINE.test(text)) return ["stack", "stack trace: Go goroutine trace", FOLD.none];
+      this.trace = "none";
+    }
+    if (GOROUTINE.test(text)) {
+      this.trace = "go";
+      return ["stack", "stack trace: Go goroutine trace", FOLD.none];
+    }
     if (this.trace === "python") {
       if (/^\s/.test(text)) return ["stack", "stack trace: frame", FOLD.none];
       if (text === "") return undefined;

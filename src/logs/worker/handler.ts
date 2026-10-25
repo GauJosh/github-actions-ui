@@ -1,5 +1,6 @@
 // Worker message handling, separated from the worker entry so tests can run it in-process.
 import { TAIL_PREVIEW_LINES } from "../../config";
+import { diffAgainst, findLines, fingerprints } from "../../domain/logs/queries";
 import { LogView } from "../../domain/logs/view";
 import type { FromWorker, ToWorker } from "./protocol";
 import { LogStore } from "./store";
@@ -59,6 +60,24 @@ export function createLogWorkerHandler(post: (message: FromWorker) => void, fail
       case "view":
         full.classify();
         post({ type: "reply", id: message.id, value: view.build(full, message.spec) });
+        return;
+      case "find": {
+        const doc = message.doc === "tail" ? tail : full;
+        if (!doc) {
+          post({ type: "reply", id: message.id, value: { matches: [], capped: false, lines: 0 } });
+          return;
+        }
+        doc.classify();
+        post({ type: "reply", id: message.id, value: findLines(doc, message.search, message.kinds, message.cap) });
+        return;
+      }
+      case "fingerprint":
+        full.classify();
+        post({ type: "reply", id: message.id, value: fingerprints(full, message.essential, message.range) });
+        return;
+      case "diff":
+        full.classify();
+        post({ type: "reply", id: message.id, value: diffAgainst(message.other, full, message.essential, message.range, message.maxEdits) });
         return;
       case "view-rows": {
         const current = message.version === view.currentVersion;

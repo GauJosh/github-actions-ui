@@ -13,7 +13,7 @@ export const FILTERS = {
   tests: { label: "Test/build results", kinds: ["test", "test-failed"] },
   actions: { label: "Action output", kinds: ["action-output"] },
   settings: { label: "Inputs & environment", kinds: ["settings"] },
-  runner: { label: "Runner messages", kinds: ["runner", "control", "section", "notice", "debug"] },
+  runner: { label: "Runner messages", kinds: ["runner", "control", "section", "notice", "debug", "advisory"] },
   unclassified: { label: "Unclassified", kinds: ["output"] },
 } as const satisfies Record<string, { label: string; kinds: readonly LineKind[] }>;
 export type FilterKey = keyof typeof FILTERS;

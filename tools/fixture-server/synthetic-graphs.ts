@@ -22,6 +22,8 @@ type JobSpec = {
   duration?: number;
   /** Step names; the last one fails when the job fails. `null` simulates a job with no step metadata. */
   steps?: string[] | null;
+  /** Extra output lines, written before the failure lines (e.g. a stack trace). */
+  log?: string[];
 };
 
 type RunSpec = {
@@ -45,6 +47,8 @@ export type SyntheticRun = {
   jobs: SyntheticJob[];
   workflow: string | { status: number; message: string };
   logs: Map<number, string>;
+  /** Earlier attempts by number (the latest attempt is `run` and `jobs`). */
+  attempts?: Map<number, { run: SyntheticRun["run"]; jobs: SyntheticJob[] }>;
 };
 
 const IN_FLIGHT = new Set(["in_progress", "queued", "waiting"]);
@@ -83,6 +87,7 @@ function makeJobs(spec: RunSpec, offset: number): { jobs: SyntheticJob[]; logs: 
       for (const step of steps.slice(1, -1)) {
         lines.push(`${step.started_at} ##[group]Run ${step.name}`, `${step.started_at} working on ${step.name}…`, `${step.started_at} ##[endgroup]`);
       }
+      for (const extra of j.log ?? []) lines.push(`${completed} ${extra}`);
       if (j.state === "failure") lines.push(`${completed} Error: [synthetic] ${j.name} failed: expected 0 failing checks, found 1`, `${completed} ##[error]Process completed with exit code 1.`);
       if (j.state === "cancelled") lines.push(`${completed} ##[error]The operation was canceled.`);
       lines.push(`${completed} Cleaning up orphan processes`);
@@ -359,10 +364,192 @@ jobs:
       { name: "test", state: "failure", start: 55, duration: 40, steps: steps("Run tests") },
     ],
   },
+  {
+    // Failure impact: two independent failures (a matrix leg and a timeout), a cancelled matrix leg, jobs blocked
+    // by GitHub's default success() check, one that ran anyway (always()), a recovery job its condition skipped,
+    // and a job skipped by its own condition that is NOT impact.
+    id: 990000108,
+    title: "[synthetic] Release checks · two independent failures (fail)",
+    workflowId: 9908,
+    file: "release-checks.yml",
+    event: "push",
+    branch: "main",
+    ago: 45,
+    workflow: `name: "[synthetic] Release checks"
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps: [{ run: make build }]
+  lint:
+    runs-on: ubuntu-latest
+    steps: [{ run: make lint }]
+  docs:
+    needs: lint
+    if: github.ref == 'refs/heads/docs'
+    runs-on: ubuntu-latest
+    steps: [{ run: make docs }]
+  unit:
+    name: unit (shard \${{ matrix.shard }})
+    needs: build
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    runs-on: ubuntu-latest
+    steps: [{ run: make test }]
+  integration:
+    needs: build
+    timeout-minutes: 2
+    runs-on: ubuntu-latest
+    steps: [{ run: make integration }]
+  package:
+    needs: [unit, integration]
+    runs-on: ubuntu-latest
+    steps: [{ run: make package }]
+  publish:
+    needs: package
+    environment: staging
+    runs-on: ubuntu-latest
+    steps: [{ run: make publish }]
+  rollback:
+    needs: publish
+    if: failure()
+    runs-on: ubuntu-latest
+    steps: [{ run: make rollback }]
+  notify:
+    needs: [package, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps: [{ run: make notify }]
+`,
+    jobs: [
+      { name: "build", state: "success", start: 0, duration: 50, steps: steps("Compile") },
+      { name: "lint", state: "success", start: 0, duration: 25, steps: steps("Lint") },
+      { name: "docs", state: "skipped", start: 30 },
+      { name: "unit (shard 1)", state: "success", start: 55, duration: 70, steps: steps("Run tests") },
+      {
+        name: "unit (shard 2)",
+        state: "failure",
+        start: 55,
+        duration: 48,
+        steps: steps("Run tests"),
+        log: [
+          "running 24 tests in shard 2",
+          "AssertionError [ERR_ASSERTION]: [synthetic] expected release notes to list 3 changes, found 2",
+          "    at Context.<anonymous> (test/release-notes.test.js:42:12)",
+          "    at process.processImmediate (node:internal/timers:483:21)",
+          "23 passing, 1 failing",
+        ],
+      },
+      { name: "unit (shard 3)", state: "cancelled", start: 55, duration: 49, steps: steps("Run tests") },
+      { name: "integration", state: "timed_out", start: 55, duration: 120, steps: steps("Integration tests") },
+      { name: "package", state: "skipped", start: 180 },
+      { name: "publish", state: "skipped", start: 180 },
+      { name: "rollback", state: "skipped", start: 180 },
+      { name: "notify", state: "success", start: 181, duration: 6, steps: steps("Notify") },
+    ],
+  },
+  // The previous, successful run of the same workflow, at an earlier commit with a different workflow file: the
+  // integration job had a display name, the unit matrix had two shards, and a smoke job ran after packaging.
+  {
+    id: 990000109,
+    title: "[synthetic] Release checks · baseline (success)",
+    workflowId: 9908,
+    file: "release-checks.yml",
+    event: "push",
+    branch: "main",
+    ago: 180,
+    workflow: `name: "[synthetic] Release checks"
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps: [{ run: make build }]
+  lint:
+    runs-on: ubuntu-latest
+    steps: [{ run: make lint }]
+  docs:
+    needs: lint
+    if: github.ref == 'refs/heads/docs'
+    runs-on: ubuntu-latest
+    steps: [{ run: make docs }]
+  unit:
+    name: unit (shard \${{ matrix.shard }})
+    needs: build
+    strategy:
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-latest
+    steps: [{ run: make test }]
+  integration:
+    name: integration-tests
+    needs: build
+    runs-on: ubuntu-latest
+    steps: [{ run: make integration }]
+  package:
+    needs: [unit, integration]
+    runs-on: ubuntu-latest
+    steps: [{ run: make package }]
+  smoke:
+    needs: package
+    runs-on: ubuntu-latest
+    steps: [{ run: make smoke }]
+  publish:
+    needs: package
+    environment: staging
+    runs-on: ubuntu-latest
+    steps: [{ run: make publish }]
+  rollback:
+    needs: publish
+    if: failure()
+    runs-on: ubuntu-latest
+    steps: [{ run: make rollback }]
+  notify:
+    needs: [package, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps: [{ run: make notify }]
+`,
+    jobs: [
+      { name: "build", state: "success", start: 0, duration: 48, steps: steps("Compile") },
+      { name: "lint", state: "success", start: 0, duration: 24, steps: steps("Lint") },
+      { name: "docs", state: "skipped", start: 30 },
+      { name: "unit (shard 1)", state: "success", start: 52, duration: 40, steps: steps("Run tests") },
+      { name: "unit (shard 2)", state: "success", start: 52, duration: 46, steps: steps("Run tests"), log: ["running 24 tests in shard 2", "24 passing"] },
+      { name: "integration-tests", state: "success", start: 52, duration: 75, steps: steps("Integration tests") },
+      { name: "package", state: "success", start: 130, duration: 20, steps: steps("Package") },
+      { name: "smoke", state: "success", start: 152, duration: 15, steps: steps("Smoke tests") },
+      { name: "publish", state: "success", start: 152, duration: 30, steps: steps("Publish") },
+      { name: "rollback", state: "skipped", start: 183 },
+      { name: "notify", state: "success", start: 184, duration: 6, steps: steps("Notify") },
+    ],
+  },
 ];
 
+/**
+ * A run with two attempts whose attempt 1 is served with the wrong attempt number (GitHub-shaped, but it reports
+ * attempt 2 when attempt 1 is requested): the app must refuse it rather than show it as attempt 1.
+ */
+function attemptMismatchRun(): SyntheticRun {
+  const r = makeRun({
+    id: 990000110,
+    title: "[synthetic] Attempt mismatch",
+    workflowId: 9909,
+    file: "attempt-mismatch.yml",
+    event: "push",
+    branch: "main",
+    ago: 30,
+    workflow: `name: "[synthetic] Attempt mismatch"\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{ run: make build }]\n`,
+    jobs: [{ name: "build", state: "success", start: 0, duration: 30, steps: steps("Build") }],
+  });
+  r.run.run_attempt = 2;
+  r.jobs = r.jobs.map((j) => ({ ...j, run_attempt: 2 }));
+  const earlier = r.jobs.map((j) => ({ ...j, id: j.id + 500, run_attempt: 1 }));
+  return { ...r, attempts: new Map([[1, { run: { ...r.run, run_attempt: 2 }, jobs: earlier }]]) };
+}
+
 export function syntheticGraphRuns(): SyntheticRun[] {
-  return SPECS.map(makeRun);
+  return [...SPECS.map(makeRun), attemptMismatchRun()];
 }
 
 /** Metadata so the existing large-log synthetic run appears in the run list too. */

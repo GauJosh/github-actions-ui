@@ -10,6 +10,14 @@ export class GitHubError extends Error {
   }
 }
 
+/** GitHub answered a request for one run attempt with another attempt. The message holds only the two numbers. */
+export class AttemptMismatchError extends Error {
+  constructor(requested: number, returned: unknown) {
+    const got = Number.isInteger(returned) ? `attempt ${returned as number}` : "a different attempt";
+    super(`GitHub returned ${got} when attempt ${requested} was requested, so it is not shown as attempt ${requested}. Try again, or choose another attempt.`);
+  }
+}
+
 /** Maps a non-success response to an explicit failure. `finalHost` distinguishes the API from the log host. */
 export async function classifyFailure(r: TransportResponse, apiHost: string): Promise<ApiFailure> {
   const { response, finalHost } = r;
@@ -39,6 +47,15 @@ export async function classifyFailure(r: TransportResponse, apiHost: string): Pr
 const JSON_HEADERS = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
 
 export type GitHubClient = ReturnType<typeof createGitHubClient>;
+
+export type CommitComparison = {
+  status: string;
+  ahead_by: number;
+  behind_by: number;
+  total_commits: number;
+  html_url?: string;
+  commits: { sha: string; commit: { message: string } }[];
+};
 
 export function createGitHubClient(options: { apiBase: string; transport: Transport }) {
   const { apiBase, transport } = options;
@@ -147,6 +164,22 @@ export function createGitHubClient(options: { apiBase: string; transport: Transp
         path = nextPath(link, apiBase);
       }
       return jobs;
+    },
+
+    /**
+     * Commits between two commits (`GET /repos/{o}/{r}/compare/{base}...{head}`): how far apart they are and the
+     * first commits in between. Read-only; the changed files are not used.
+     */
+    async compareCommits(ref: RepoRef, base: string, head: string): Promise<CommitComparison> {
+      const { body } = await getJson<CommitComparison>(`${repoPath(ref)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=50`);
+      return {
+        status: body.status,
+        ahead_by: body.ahead_by,
+        behind_by: body.behind_by,
+        total_commits: body.total_commits,
+        html_url: body.html_url,
+        commits: (body.commits ?? []).map((c) => ({ sha: c.sha, commit: { message: c.commit.message } })),
+      };
     },
 
     /** A job-log request. Ranges always use the explicit `bytes=a-b` form; the log host ignores suffix ranges. */

@@ -14,7 +14,9 @@ import type { LogMarkers } from "../../domain/steps/step-map";
 import type { ApiFailure } from "../../domain/types";
 import { GitHubError, classifyFailure } from "../../github/client";
 import type { ReadMethod, TransportResponse } from "../../github/transport";
-import type { ViewRow, ViewSpec, ViewSummary } from "../../domain/logs/view";
+import type { LineKind } from "../../domain/logs/classify";
+import type { FindResult, Fingerprints, LogDiff } from "../../domain/logs/queries";
+import type { SearchOptions, ViewRow, ViewSpec, ViewSummary } from "../../domain/logs/view";
 import type { RowsResult, SearchResult, TailSummary, ViewRowsResult } from "../worker/protocol";
 import type { StoreStats } from "../worker/store";
 import { WorkerFailed, WorkerSession, type WorkerPort } from "./worker-session";
@@ -215,6 +217,39 @@ export class LogLoader {
     if (!session || session.failed) return null;
     try {
       return await session.ask<SearchResult>({ type: "search", query, cap });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Pipeline-wide search over the tail or the full log as loaded so far. Null when no worker holds the log. */
+  async find(doc: "tail" | "full", search: SearchOptions, kinds: LineKind[] | undefined, cap: number): Promise<FindResult | null> {
+    const session = this.session;
+    if (!session || session.failed) return null;
+    try {
+      return await session.ask<FindResult>({ type: "find", doc, search, kinds, cap });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Line fingerprints of the full log (log comparison). Null until the full log has loaded. */
+  async fingerprints(essential: boolean, range?: [number, number]): Promise<Fingerprints | null> {
+    const session = this.session;
+    if (this.snap.status !== "complete" || !session || session.failed) return null;
+    try {
+      return await session.ask<Fingerprints>({ type: "fingerprint", essential, range });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Diffs another log's fingerprints against this complete log, in this log's worker. */
+  async diffAgainst(other: Uint32Array, essential: boolean, range: [number, number] | undefined, maxEdits: number): Promise<LogDiff | null> {
+    const session = this.session;
+    if (this.snap.status !== "complete" || !session || session.failed) return null;
+    try {
+      return await session.ask<LogDiff>({ type: "diff", other, essential, range, maxEdits });
     } catch {
       return null;
     }

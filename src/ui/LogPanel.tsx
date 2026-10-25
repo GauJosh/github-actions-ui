@@ -26,7 +26,8 @@ function useLoader(env: Environment, ref: JobRef): LogLoader {
   return loader;
 }
 
-type PanelProps = { job: Job; line?: number; step?: number; links: LogLinks };
+/** `highlight`: search text to apply when the log opens (e.g. from a pipeline-wide search result). */
+type PanelProps = { job: Job; line?: number; step?: number; links: LogLinks; highlight?: string };
 
 export function LogPanel({ env, jobRef, ...rest }: PanelProps & { env: Environment; jobRef: JobRef }) {
   const loader = useLoader(env, jobRef);
@@ -52,14 +53,20 @@ function useThrottled<T>(value: T, ms: number): T {
   return shown;
 }
 
-function LoadedLogPanel({ loader, job, line, step, links }: PanelProps & { loader: LogLoader }) {
+function LoadedLogPanel({ loader, job, line, step, links, highlight }: PanelProps & { loader: LogLoader }) {
   const snap = useSyncExternalStore(
     useCallback((onChange: () => void) => loader.subscribe(onChange), [loader]),
     () => loader.snapshot,
   );
   const prefs = useLogPrefs();
-  const [query, setQuery] = useState("");
-  const [applied, setApplied] = useState("");
+  const [query, setQuery] = useState(highlight ?? "");
+  const [applied, setApplied] = useState(highlight ?? "");
+  const [highlighted, setHighlighted] = useState(highlight);
+  if (highlight !== highlighted) {
+    setHighlighted(highlight);
+    setQuery(highlight ?? "");
+    setApplied(highlight ?? "");
+  }
   const [expanded, setExpanded] = useState<[number, number][]>([]);
   /** Steps the user opened (true) or collapsed (false); others follow the default. */
   const [stepOpen, setStepOpen] = useState<Record<number, boolean>>({});

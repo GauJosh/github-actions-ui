@@ -104,6 +104,8 @@ export type GraphNode = {
   environment?: string;
   /** From the workflow file: `if: failure()`, so the job runs only when something upstream failed. */
   onFailure?: boolean;
+  /** From the workflow file: the job's raw `if:` expression, when it has one. */
+  condition?: string;
   /** Inside reusable-workflow calls: which calls, and which files at which revisions. Absent at the top level. */
   context?: NodeContext;
   /** A job's steps as written in its workflow file. */
@@ -323,6 +325,7 @@ export function buildRunGraph(jobs: Job[], definition: WorkflowDefinition | null
       resolvedWorkflow,
       environment: def.environment,
       onFailure: runsOnFailure(def) || undefined,
+      condition: def.ifCondition,
       stepDefs: def.uses ? undefined : def.steps,
     });
   });

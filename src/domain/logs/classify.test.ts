@@ -42,7 +42,11 @@ describe("line classification", () => {
   it("separates explicit annotations from text that merely looks like an error or warning", () => {
     expect(kind(52)).toBe("error");
     expect(reasonOf(c.reasons[52]!)).toBe("runner annotation ##[error] that only reports the exit code");
-    expect(kind(51)).toBe("warning");
+    // The sample's only ##[warning] is a Node.js deprecation notice: a platform advisory, not about the job's work.
+    // It stays visible (Runner messages, Essential output) but is not counted as a warning of the job.
+    expect(kind(51)).toBe("advisory");
+    expect(reasonOf(c.reasons[51]!)).toMatch(/platform deprecation or upgrade notice/);
+    expect(c.folds[51]).toBe(FOLD.none);
     expect(kind(48)).toBe("error-text");
     expect(reasonOf(c.reasons[48]!)).toMatch(/^text pattern/);
     expect(kind(50)).toBe("warning-text");
@@ -128,14 +132,16 @@ describe("display views", () => {
   });
 
   it("Errors and warnings shows annotations and text matches with context and the step header, nothing else", () => {
-    expect(shownLines(src, spec({ mode: "problems" }))).toEqual([37, 46, 47, 48, 50, 51, 52]);
+    // 51 is the deprecation advisory (see above): shown in Essential and All output, not among problems.
+    expect(shownLines(src, spec({ mode: "problems" }))).toEqual([37, 46, 47, 48, 50, 52]);
+    expect(shownLines(src, spec())).toContain(51);
     expect(shownLines(src, spec({ mode: "problems", context: 1 }))).toEqual([37, 45, 46, 47, 48, 49, 50, 51, 52, 53]);
   });
 
   it("quick filters combine, with counts", () => {
     const view = new LogView();
     const summary = view.build(src, spec({ filters: ["commands", "tests"] }));
-    expect(summary.counts).toMatchObject({ errors: 4, warnings: 2, commands: 7, tests: 3, actions: 9, settings: 10, unclassified: 3 });
+    expect(summary.counts).toMatchObject({ errors: 4, warnings: 1, commands: 7, tests: 3, actions: 9, settings: 10, unclassified: 3 });
     expect(shownLines(src, spec({ filters: ["commands", "tests"] }))).toEqual([14, 22, 25, 37, 38, 39, 45, 46, 47, 54]);
     expect(shownLines(src, spec({ filters: ["unclassified"] }))).toEqual([44, 49, 56]);
   });

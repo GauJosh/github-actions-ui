@@ -7,7 +7,8 @@ import type { Job, RepoRef, Run } from "../domain/types";
 import { GitHubError, type GitHubClient } from "../github/client";
 import { TREE_LIMITS, type TreeStats } from "./workflow-tree";
 
-export type DefinitionResult = { definition: WorkflowDefinition; file: { path: string; revision: string } } | { unavailableReason: string };
+/** `text`: the file as read, kept for comparisons between runs. */
+export type DefinitionResult = { definition: WorkflowDefinition; file: { path: string; revision: string }; text?: string } | { unavailableReason: string };
 
 export async function loadWorkflowDefinition(client: GitHubClient, repo: RepoRef, run: Run): Promise<DefinitionResult> {
   if (!run.path || !/\.ya?ml$/.test(run.path)) {
@@ -39,7 +40,7 @@ export async function loadWorkflowDefinition(client: GitHubClient, repo: RepoRef
   }
   const definition = readWorkflowDefinition(doc);
   if ("error" in definition) return { unavailableReason: definition.error };
-  return { definition, file: { path: run.path, revision: run.head_sha } };
+  return { definition, file: { path: run.path, revision: run.head_sha }, text };
 }
 
 /** The run's own workflow file, as the root of its call hierarchy. */
