@@ -548,8 +548,69 @@ function attemptMismatchRun(): SyntheticRun {
   return { ...r, attempts: new Map([[1, { run: { ...r.run, run_attempt: 2 }, jobs: earlier }]]) };
 }
 
+/**
+ * Enough history for a measured baseline: eight runs of one workflow, oldest first. Seven earlier runs (six
+ * successful, one failed, one success on its second attempt) and a slower latest run, 990000127. build → test,
+ * with a short lint alongside, so each run lasts build + 2s + test.
+ */
+const HISTORY_RUNS: { id: number; ago: number; build: number; test: number; state?: string; retried?: true }[] = [
+  { id: 990000120, ago: 600, build: 60, test: 120 },
+  { id: 990000121, ago: 560, build: 70, test: 130 },
+  { id: 990000122, ago: 520, build: 61, test: 40, state: "failure" },
+  { id: 990000123, ago: 480, build: 50, test: 110 },
+  { id: 990000124, ago: 440, build: 80, test: 150, retried: true },
+  { id: 990000125, ago: 400, build: 65, test: 125 },
+  { id: 990000126, ago: 360, build: 55, test: 115 },
+  { id: 990000127, ago: 320, build: 90, test: 170 },
+];
+
+function historyRuns(): SyntheticRun[] {
+  const workflow = `name: "[synthetic] Nightly build"\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{ run: make build }]\n  lint:\n    runs-on: ubuntu-latest\n    steps: [{ run: make lint }]\n  test:\n    needs: build\n    runs-on: ubuntu-latest\n    steps: [{ run: make test }]\n`;
+  return HISTORY_RUNS.map((h) => {
+    const spec = (state: string): RunSpec => ({
+      id: h.id,
+      title: `[synthetic] Nightly build · ${h.id % 1000}`,
+      workflowId: 9910,
+      file: "nightly-build.yml",
+      event: "push",
+      branch: "main",
+      ago: h.ago,
+      workflow,
+      jobs: [
+        { name: "build", state: "success", start: 0, duration: h.build, steps: steps("Compile") },
+        { name: "lint", state: "success", start: 0, duration: 20, steps: steps("Lint") },
+        { name: "test", state, start: h.build + 2, duration: h.test, steps: steps("Run tests") },
+      ],
+    });
+    const r = makeRun(spec(h.state ?? "success"));
+    if (!h.retried) return r;
+    // GitHub lists this run at attempt 2; attempt 1 failed and has its own jobs.
+    const first = makeRun(spec("failure"));
+    r.run.run_attempt = 2;
+    r.jobs = r.jobs.map((j) => ({ ...j, run_attempt: 2 }));
+    const earlier = first.jobs.map((j) => ({ ...j, id: j.id + 50, run_attempt: 1 }));
+    return { ...r, attempts: new Map([[1, { run: { ...first.run, run_attempt: 1 }, jobs: earlier }]]) };
+  });
+}
+
+/**
+ * History edge cases, a workflow of its own: a measured success (990000130), a cancelled run with timestamps
+ * (990000131), a success whose job has no start time (990000132), one whose job ends before it starts (990000133),
+ * and a run still in progress (990000134, the latest). None of the unmeasured ones has a duration to show.
+ */
+function historyEdgeRuns(): SyntheticRun[] {
+  const workflow = `name: "[synthetic] Edge history"\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{ run: make build }]\n`;
+  const edge = (id: number, ago: number, state: string) =>
+    makeRun({ id, title: `[synthetic] Edge history · ${id % 1000}`, workflowId: 9911, file: "edge-history.yml", event: "push", branch: "main", ago, workflow, jobs: [{ name: "build", state, start: 0, duration: 90, steps: steps("Compile") }] });
+  const untimed = edge(990000132, 280, "success");
+  untimed.jobs = untimed.jobs.map((j) => ({ ...j, started_at: null }));
+  const reversed = edge(990000133, 270, "success");
+  reversed.jobs = reversed.jobs.map((j) => ({ ...j, completed_at: iso(-270 * 60 - 60) }));
+  return [edge(990000130, 300, "success"), edge(990000131, 290, "cancelled"), untimed, reversed, edge(990000134, 260, "in_progress")];
+}
+
 export function syntheticGraphRuns(): SyntheticRun[] {
-  return [...SPECS.map(makeRun), attemptMismatchRun()];
+  return [...SPECS.map(makeRun), attemptMismatchRun(), ...historyRuns(), ...historyEdgeRuns()];
 }
 
 /** Metadata so the existing large-log synthetic run appears in the run list too. */

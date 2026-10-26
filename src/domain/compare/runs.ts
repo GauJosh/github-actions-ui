@@ -13,6 +13,7 @@
 import { durationMs, jobStatus, type GraphNode, type NodeStatus, type RunGraph } from "../graph/build";
 import type { Job, Run, Step } from "../types";
 import { diffSequences, type DiffResult } from "./diff";
+import { identities, nodeIdentity } from "./identity";
 
 export type Side = {
   run: Run;
@@ -76,32 +77,6 @@ const RAN = new Set<NodeStatus>(["success", "failure", "timed_out", "neutral"]);
 const FAILING = new Set<NodeStatus>(["failure", "timed_out", "cancelled"]);
 /** A job duration change is reported when it is at least this large, both absolutely and relative to the baseline. */
 export const REGRESSION = { minMs: 30_000, minRatio: 1.25 };
-
-type Identity = { key: string; basis: "workflow-file" | "name"; label: string; node?: GraphNode };
-
-/** The workflow identity of a node: its context path and job id in the workflow file. */
-function nodeIdentity(n: GraphNode): string | undefined {
-  if (n.source !== "workflow-file" || !n.yamlId) return undefined;
-  return [...(n.context?.path ?? []), n.yamlId].join("/");
-}
-
-function identities(side: Side): Map<number, Identity> {
-  const out = new Map<number, Identity>();
-  for (const n of side.graph?.nodes ?? []) {
-    const id = nodeIdentity(n);
-    for (const m of n.members) {
-      if (!id) {
-        out.set(m.job.id, { key: `name:${m.job.name}`, basis: "name", label: m.job.name, node: n });
-        continue;
-      }
-      // A matrix leg by its values; a job inside a call shown as one node by its name in the called workflow.
-      const part = n.kind === "job" ? "" : `#${m.label}`;
-      out.set(m.job.id, { key: `wf:${id}${part}`, basis: "workflow-file", label: n.kind === "job" ? n.label : `${n.label} › ${m.label}`, node: n });
-    }
-  }
-  for (const j of side.jobs) if (!out.has(j.id)) out.set(j.id, { key: `name:${j.name}`, basis: "name", label: j.name });
-  return out;
-}
 
 function jobDuration(job: Job | undefined): number | undefined {
   if (!job || job.status !== "completed") return undefined;

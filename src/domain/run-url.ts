@@ -30,7 +30,7 @@ export function parseRepo(input: string): RepoRef | null {
  * In-app location, kept in the URL fragment. It never contains credentials.
  * - `#/` repositories
  * - `#/repos/OWNER/REPO?status=…&branch=…&event=…&workflow=…` the run list
- * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph|timeline|source|compare|search][&attempt=N][&impact=all|NODE][&base=RUN.N][&q=TEXT]`
+ * - `#/runs/OWNER/REPO/RUN[/phases/PHASE[/calls/JOB]][/jobs/JOB[/steps/STEP][/log | /L<line>]][?view=graph|timeline|source|compare|search|history][&attempt=N][&impact=all|NODE][&base=RUN.N][&q=TEXT]`
  *   a run: its selected phase, an opened reusable-workflow call, a selected job, its log opened at a step or a
  *   line, the view, the run attempt (absent: the latest attempt), the failure impact shown on the graph, the
  *   baseline of a comparison (a run and an explicit attempt), and the search text
@@ -58,8 +58,8 @@ export type Route = {
 };
 
 /** A run's views besides the default release overview. */
-export type RunView = "graph" | "timeline" | "source" | "compare" | "search";
-const VIEWS: RunView[] = ["graph", "timeline", "source", "compare", "search"];
+export type RunView = "graph" | "timeline" | "source" | "compare" | "search" | "history";
+const VIEWS: RunView[] = ["graph", "timeline", "source", "compare", "search", "history"];
 
 export function routeToHash(route: Route): string {
   if (route.run) {

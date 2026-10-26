@@ -36,6 +36,7 @@ import { GraphCanvas, nodeHeight } from "./GraphCanvas";
 import { JobDetails } from "./JobDetails";
 import { JobList } from "./JobList";
 import { RunCompare } from "./RunCompare";
+import { RunHistory } from "./RunHistory";
 import { RunSearch } from "./RunSearch";
 import { PhaseDetail } from "./PhaseDetail";
 import { ReleaseOverview } from "./ReleaseOverview";
@@ -45,7 +46,7 @@ import { Timeline } from "./Timeline";
 
 type Props = { env: Environment; run: RunRef; route: Route };
 
-const VIEW_NAME = { overview: "Release overview", graph: "Execution graph", timeline: "Timeline", source: "Workflow source", compare: "Comparison", search: "Search" } as const;
+const VIEW_NAME = { overview: "Release overview", graph: "Execution graph", timeline: "Timeline", source: "Workflow source", compare: "Comparison", search: "Search", history: "History" } as const;
 
 export function RunExplorer({ env, run: ref, route }: Props) {
   const { jobId, log, line, step, attempt } = route;
@@ -117,7 +118,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
     for (const k of release.unassignedKeys) m.set(k, "Other jobs");
     return m;
   }, [release]);
-  const view: "overview" | "graph" | "timeline" | "source" | "compare" | "search" = route.view ?? (overview && !release ? "graph" : "overview");
+  const view: "overview" | "graph" | "timeline" | "source" | "compare" | "search" | "history" = route.view ?? (overview && !release ? "graph" : "overview");
 
   // Run insights: statistics (available as soon as jobs load; the critical path needs the graph), the timeline
   // and the workflow source tree, all from data already loaded for the run.
@@ -304,6 +305,9 @@ export function RunExplorer({ env, run: ref, route }: Props) {
         <button role="tab" aria-selected={view === "search"} onClick={() => go({ view: "search", phase: undefined, call: undefined, jobId: selectedJob?.id, impact: undefined, base: undefined, ...logPlace })}>
           Search
         </button>
+        <button role="tab" aria-selected={view === "history"} onClick={() => go({ view: "history", phase: undefined, call: undefined, jobId: selectedJob?.id, impact: undefined, base: undefined, q: undefined, ...logPlace })}>
+          History
+        </button>
         {impact && impact.failures.length > 0 && !impactShown && (
           <button type="button" className="investigate" onClick={openImpact} data-testid="investigate-failure">
             Investigate failure
@@ -330,6 +334,12 @@ export function RunExplorer({ env, run: ref, route }: Props) {
             graphHref={(jobId) => routeToHash({ run: ref, view: "graph", attempt, jobId })}
             stepHref={(job, n) => routeToHash({ run: ref, view: "compare", attempt, base: route.base, jobId: job.id, step: n })}
           />
+        ) : view === "history" && !jobs.isError ? (
+          run.data && jobs.isSuccess ? (
+            <RunHistory env={env} runRef={ref} run={run.data} attempt={shownAttempt} jobs={jobs.data} />
+          ) : (
+            <p className="state">Loading this run…</p>
+          )
         ) : view === "search" && jobs.isSuccess ? (
           <RunSearch
             env={env}
