@@ -118,7 +118,14 @@ function loadCorpus(root: string, decompress: (jobId: number, path: string) => B
       run: s.run as RunJson,
       jobs: () => ({ total_count: s.jobs.length, jobs: s.jobs }),
       workflow: () => s.workflow,
-      ...(s.attempts && { attempts: new Map([...s.attempts].map(([n, a]) => [n, { run: a.run as RunJson, jobs: () => ({ total_count: a.jobs.length, jobs: a.jobs }) }])) }),
+      ...(s.attempts && {
+        attempts: new Map(
+          [...s.attempts].map(([n, a]) => [
+            n,
+            { run: a.run as RunJson, jobs: () => ({ total_count: a.jobs.length, jobs: a.jobs }), ...(a.jobsError && { jobsError: { status: a.jobsError, message: "[synthetic] Server Error" } }) },
+          ]),
+        ),
+      }),
     });
     for (const job of s.jobs) {
       const text = s.logs.get(job.id);

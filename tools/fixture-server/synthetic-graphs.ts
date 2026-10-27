@@ -47,8 +47,8 @@ export type SyntheticRun = {
   jobs: SyntheticJob[];
   workflow: string | { status: number; message: string };
   logs: Map<number, string>;
-  /** Earlier attempts by number (the latest attempt is `run` and `jobs`). */
-  attempts?: Map<number, { run: SyntheticRun["run"]; jobs: SyntheticJob[] }>;
+  /** Earlier attempts by number (the latest attempt is `run` and `jobs`); `jobsError`: the HTTP status its jobs answer with. */
+  attempts?: Map<number, { run: SyntheticRun["run"]; jobs: SyntheticJob[]; jobsError?: number }>;
 };
 
 const IN_FLIGHT = new Set(["in_progress", "queued", "waiting"]);
@@ -746,8 +746,91 @@ export function syntheticArtifacts(): Map<number, Record<string, unknown>[]> {
   ]);
 }
 
+/**
+ * Retry evidence, workflow 9912: two earlier runs and 990000142 at attempt 3. In 990000142, attempt 1 failed
+ * integration, e2e and one of two jobs both named "check" (not in the workflow file, so only their shared name
+ * identifies them); attempt 2's jobs cannot be read (500); attempt 3 re-ran the failed jobs (integration passed, e2e
+ * failed again) and lists build with run_attempt 1 and attempt 1's job id (carried over, not re-run). 990000140 failed
+ * e2e; 990000141 failed integration and e2e. Workflow 9913: 990000143 failed lint, then passed it on attempt 2, and has
+ * no earlier runs. Workflow 9914: 990000144 reports run_attempt 0, so how many attempts it has is not known.
+ */
+const RETRY_WORKFLOW = `name: "[synthetic] Retry evidence"\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{ run: make build }]\n  integration:\n    needs: build\n    runs-on: ubuntu-latest\n    steps: [{ run: make integration }]\n  e2e:\n    needs: build\n    runs-on: ubuntu-latest\n    steps: [{ run: make e2e }]\n`;
+
+function retryRuns(): SyntheticRun[] {
+  type States = { build: string; integration: string; e2e: string; check: [string, string] };
+  const spec = (id: number, ago: number, s: States): RunSpec => ({
+    id,
+    title: `[synthetic] Retry evidence · ${id % 1000}`,
+    workflowId: 9912,
+    file: "retry-evidence.yml",
+    event: "push",
+    branch: "main",
+    ago,
+    workflow: RETRY_WORKFLOW,
+    jobs: [
+      { name: "build", state: s.build, start: 0, duration: 40, steps: steps("Compile") },
+      { name: "integration", state: s.integration, start: 42, duration: 60, steps: steps("Integration tests") },
+      { name: "e2e", state: s.e2e, start: 42, duration: 90, steps: steps("End-to-end tests") },
+      { name: "check", state: s.check[0], start: 42, duration: 20, steps: steps("Check") },
+      { name: "check", state: s.check[1], start: 42, duration: 25, steps: steps("Check") },
+    ],
+  });
+  const ok: [string, string] = ["success", "success"];
+  const target = makeRun(spec(990000142, 200, { build: "success", integration: "success", e2e: "failure", check: ok }));
+  const first = makeRun(spec(990000142, 200, { build: "success", integration: "failure", e2e: "failure", check: ["failure", "success"] }));
+  const firstJobs = first.jobs.map((j) => ({ ...j, id: j.id + 50, run_attempt: 1 }));
+  target.run.run_attempt = 3;
+  target.jobs = target.jobs.map((j) => (j.name === "build" ? firstJobs[0]! : { ...j, run_attempt: 3 }));
+  const retried: SyntheticRun = {
+    ...target,
+    attempts: new Map([
+      [1, { run: { ...first.run, run_attempt: 1 }, jobs: firstJobs }],
+      [2, { run: { ...first.run, run_attempt: 2 }, jobs: [], jobsError: 500 }],
+    ]),
+  };
+
+  const single = (state: string) =>
+    makeRun({
+      id: 990000143,
+      title: "[synthetic] Retry single",
+      workflowId: 9913,
+      file: "retry-single.yml",
+      event: "push",
+      branch: "main",
+      ago: 180,
+      workflow: `name: "[synthetic] Retry single"\non: push\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps: [{ run: make lint }]\n`,
+      jobs: [{ name: "lint", state, start: 0, duration: 20, steps: steps("Lint") }],
+    });
+  const once = single("success");
+  const failedOnce = single("failure");
+  once.run.run_attempt = 2;
+  once.jobs = once.jobs.map((j) => ({ ...j, run_attempt: 2 }));
+  const recovered: SyntheticRun = { ...once, attempts: new Map([[1, { run: { ...failedOnce.run, run_attempt: 1 }, jobs: failedOnce.jobs.map((j) => ({ ...j, id: j.id + 50, run_attempt: 1 })) }]]) };
+
+  const malformed = makeRun({
+    id: 990000144,
+    title: "[synthetic] Retry malformed",
+    workflowId: 9914,
+    file: "retry-malformed.yml",
+    event: "push",
+    branch: "main",
+    ago: 160,
+    workflow: `name: "[synthetic] Retry malformed"\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{ run: make build }]\n`,
+    jobs: [{ name: "build", state: "failure", start: 0, duration: 20, steps: steps("Build") }],
+  });
+  malformed.run.run_attempt = 0;
+
+  return [
+    makeRun(spec(990000140, 240, { build: "success", integration: "success", e2e: "failure", check: ok })),
+    makeRun(spec(990000141, 220, { build: "success", integration: "failure", e2e: "failure", check: ok })),
+    retried,
+    recovered,
+    malformed,
+  ];
+}
+
 export function syntheticGraphRuns(): SyntheticRun[] {
-  return [...SPECS.map(makeRun), attemptMismatchRun(), ...historyRuns(), ...historyEdgeRuns()];
+  return [...SPECS.map(makeRun), attemptMismatchRun(), ...historyRuns(), ...historyEdgeRuns(), ...retryRuns()];
 }
 
 /** Metadata so the existing large-log synthetic run appears in the run list too. */

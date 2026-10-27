@@ -998,3 +998,44 @@ code {
     --tl-label: 150px;
   }
 }
+
+/* Retries and recurrence */
+.retries {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.retries-block {
+  min-width: 0;
+}
+.retries-block h5,
+.retries-block > summary {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.retries-block > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.retries-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.retries-basis {
+  color: var(--muted);
+}
+.retries-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-top: 6px;
+}
+.retries-table-wrap caption {
+  text-align: left;
+  color: var(--muted);
+  font-size: 12px;
+  padding-bottom: 4px;
+}
