@@ -20,6 +20,7 @@ import { buildSourceTree } from "../../domain/insights/source";
 import { computeRunStats } from "../../domain/insights/stats";
 import { buildTimeline } from "../../domain/insights/timeline";
 import { buildOverview, gatesFor, type ReleaseOverview as Overview } from "../../domain/phases/phases";
+import type { ExcerptInput } from "../../domain/report/report";
 import { routeToHash, type Route } from "../../domain/run-url";
 import type { Job, Run, RunRef } from "../../domain/types";
 import { GalleryStrip } from "../../fixture-mode/gallery";
@@ -33,6 +34,7 @@ import { ErrorState } from "../RepoDashboard";
 import { StatusBadge, StatusIcon, statusOf } from "../status";
 import { FailureImpact, impactFocus } from "./FailureImpact";
 import { GraphCanvas, nodeHeight } from "./GraphCanvas";
+import { ExportReport, useReportComparison } from "./ExportReport";
 import { JobDetails } from "./JobDetails";
 import { JobList } from "./JobList";
 import { RunCompare } from "./RunCompare";
@@ -85,6 +87,12 @@ export function RunExplorer({ env, run: ref, route }: Props) {
   });
   const treePending = callsSomething && hierarchy.isPending;
   const [nodeKey, setNodeKey] = useState<string | undefined>();
+  // The run and attempt the export preview was opened for: it is shown only while they are still on screen.
+  const [exportFor, setExportFor] = useState<string | undefined>();
+  // Log excerpts the user added to the report, for one run and attempt (`key`); cleared when either changes.
+  const [excerpts, setExcerpts] = useState<{ key: string; items: ExcerptInput[] }>({ key: "", items: [] });
+  // An open comparison, for the report; it shares the compare view's queries and requests nothing of its own.
+  const reportComparison = useReportComparison(env, ref, attempt ?? latest.data?.run_attempt, route.view === "compare" ? route.base : undefined);
 
   const graph = useMemo(() => {
     if (!run.data || !jobs.data || definition.isPending || treePending) return null;
@@ -218,6 +226,14 @@ export function RunExplorer({ env, run: ref, route }: Props) {
   const r = run.data!;
   const latestAttempt = latest.data.run_attempt;
   const shownAttempt = attempt ?? latestAttempt;
+  const exportKey = `${env.mode}/${ref.owner}/${ref.repo}/${ref.runId}/${shownAttempt}`;
+  if (excerpts.key !== exportKey) setExcerpts({ key: exportKey, items: [] });
+  const reportExcerpts = excerpts.key === exportKey ? excerpts.items : [];
+  const excerptTarget = {
+    held: reportExcerpts.length,
+    // Added only to the run and attempt it was read in; a read that finishes after a change is dropped.
+    add: (e: ExcerptInput) => setExcerpts((prev) => (prev.key === exportKey ? { key: exportKey, items: [...prev.items, e] } : prev)),
+  };
   // Jobs GitHub lists for this attempt but reports as run in another (e.g. kept from an earlier attempt when only
   // failed jobs were re-run). They are labelled, never silently mixed in.
   const carried = jobs.data?.filter((j) => j.run_attempt !== undefined && j.run_attempt !== shownAttempt) ?? [];
@@ -320,7 +336,25 @@ export function RunExplorer({ env, run: ref, route }: Props) {
             Release overview unavailable: {overview.unavailable}
           </span>
         )}
+        <button type="button" className="export-action" aria-expanded={exportFor === exportKey} onClick={() => setExportFor(exportFor === exportKey ? undefined : exportKey)} data-testid="export-report">
+          Export report{reportExcerpts.length > 0 && ` (${reportExcerpts.length} log excerpt${reportExcerpts.length === 1 ? "" : "s"})`}
+        </button>
       </div>
+      {exportFor === exportKey && (
+        <ExportReport
+          key={exportKey}
+          env={env}
+          runRef={ref}
+          latest={latest.data}
+          viewed={attempt !== undefined ? { number: attempt, run: r } : undefined}
+          jobs={jobs.isSuccess ? { state: "loaded", value: jobs.data } : jobs.isError ? { state: "unavailable", reason: jobs.error.message } : { state: "not loaded" }}
+          impact={impact ? { state: "loaded", value: impact } : { state: "not loaded" }}
+          comparison={reportComparison}
+          excerpts={reportExcerpts}
+          onRemoveExcerpt={(i) => setExcerpts((prev) => (prev.key === exportKey ? { key: exportKey, items: prev.items.filter((_, j) => j !== i) } : prev))}
+          onClose={() => setExportFor(undefined)}
+        />
+      )}
 
       <section className="panel graph-panel" aria-label={VIEW_NAME[view]} id="graph">
         {view === "compare" ? (
@@ -494,7 +528,7 @@ export function RunExplorer({ env, run: ref, route }: Props) {
           <a href="#graph" className="back-to-graph" onClick={(e) => (e.preventDefault(), document.getElementById("graph")?.scrollIntoView())}>
             ↑ Back to the {VIEW_NAME[view].toLowerCase()}
           </a>
-          <LogPanel env={env} jobRef={{ ...ref, jobId: selectedJob.id }} job={selectedJob} line={line} step={step} links={logLinks} highlight={view === "search" ? route.q : undefined} />
+          <LogPanel env={env} jobRef={{ ...ref, jobId: selectedJob.id }} job={selectedJob} line={line} step={step} links={logLinks} highlight={view === "search" ? route.q : undefined} report={excerptTarget} />
         </div>
       )}
       {jobId !== undefined && jobs.isSuccess && !selectedJob && (

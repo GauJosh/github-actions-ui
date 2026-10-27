@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Matcher, Tiers, ViewRow } from "../domain/logs/view";
 import type { NodeStatus } from "../domain/graph/build";
 import { count as fmt } from "./copy";
@@ -72,6 +72,11 @@ type Props = {
   onExpand(start: number, end: number): void;
   step?(number: number): StepHeading | undefined;
   onToggleStep?(number: number, collapsed: boolean): void;
+  /**
+   * The report excerpt's range (1-based, inclusive; shaded when valid) and how to set its boundaries from a line's
+   * menu. Absent: rows have no line menu.
+   */
+  excerpt?: { start?: number; end?: number; set(which: "first" | "last", line: number): void };
 };
 
 /** Number of entries in the ascending list that are below `r`. */
@@ -87,8 +92,10 @@ function below(list: number[], r: number): number {
 }
 
 /** Renders only the visible rows of a worker-built view. Line numbers shown are the original, 1-based ones. */
-export function VirtualLog({ rowCount, version, fetchRows, stepRows = [], scrollToRow, scrollKey, highlight, range, matcher, hrefFor, onExpand, step, onToggleStep }: Props) {
+export function VirtualLog({ rowCount, version, fetchRows, stepRows = [], scrollToRow, scrollKey, highlight, range, matcher, hrefFor, onExpand, step, onToggleStep, excerpt }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
+  // The line whose menu is open.
+  const [menu, setMenu] = useState<number>();
   const [scrollTop, setScrollTop] = useState(0);
   const [rows, setRows] = useState<{ from: number; rows: ViewRow[] }>({ from: 0, rows: [] });
   const top = (r: number) => r * ROW + below(stepRows, r) * EXTRA;
@@ -146,13 +153,28 @@ export function VirtualLog({ rowCount, version, fetchRows, stepRows = [], scroll
           }
           const n = row.n + 1;
           const inStep = range !== undefined && n >= range.start && n <= range.end;
-          const cls = ["row", `k-${row.kind}`, inStep && "in-step", inStep && n === range.start && "step-start", inStep && range.marks.includes(n) && "step-error", n === highlight && "highlighted"].filter(Boolean).join(" ");
+          const inExcerpt = excerpt?.start !== undefined && excerpt.end !== undefined && n >= excerpt.start && n <= excerpt.end;
+          const cls = ["row", `k-${row.kind}`, inStep && "in-step", inStep && n === range.start && "step-start", inStep && range.marks.includes(n) && "step-error", n === highlight && "highlighted", inExcerpt && "in-excerpt", menu === n && "menu-open"]
+            .filter(Boolean)
+            .join(" ");
           const badge = badgeFor(row);
           return (
             <div key={n} className={cls} style={{ top: top(r) }} data-line={n} data-kind={row.kind} title={`${row.kind}: ${row.reason}`}>
               <a className="ln" href={hrefFor(n)}>
                 {n}
               </a>
+              {excerpt && (
+                <LineMenu
+                  line={n}
+                  open={menu === n}
+                  onOpen={() => setMenu(n)}
+                  onClose={() => setMenu(undefined)}
+                  onSet={(which) => {
+                    excerpt.set(which, n);
+                    setMenu(undefined);
+                  }}
+                />
+              )}
               <span className="tx">
                 {badge && (
                   <span className={`kbadge kbadge-${badge.cls}`} title={badge.title} data-badge={badge.cls}>
@@ -166,6 +188,70 @@ export function VirtualLog({ rowCount, version, fetchRows, stepRows = [], scroll
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * A line's menu: a small button beside its number opens two actions that set the report excerpt's boundaries. Arrow
+ * keys move between the actions; Escape, Tab or leaving the menu closes it, and focus returns to the button so
+ * reading continues from that line.
+ */
+function LineMenu({ line, open, onOpen, onClose, onSet }: { line: number; open: boolean; onOpen(): void; onClose(): void; onSet(which: "first" | "last"): void }) {
+  const button = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open) list.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
+  }, [open]);
+  const close = () => {
+    onClose();
+    button.current?.focus();
+  };
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const items = [...(list.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    } else if (e.key === "Tab") onClose();
+  };
+  return (
+    <span className="ln-menu">
+      <button
+        ref={button}
+        type="button"
+        className="ln-menu-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Line ${line}: report excerpt actions`}
+        title="Set this line as the excerpt's first or last line"
+        onClick={() => (open ? close() : onOpen())}
+        data-testid="line-menu"
+      >
+        ⋮
+      </button>
+      {open && (
+        <div
+          ref={list}
+          className="ln-menu-list"
+          role="menu"
+          aria-label={`Line ${line}`}
+          onKeyDown={onKey}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null) && e.relatedTarget !== button.current) onClose();
+          }}
+        >
+          <button type="button" role="menuitem" onClick={() => (onSet("first"), button.current?.focus())} data-testid="set-first-line">
+            Set as first line
+          </button>
+          <button type="button" role="menuitem" onClick={() => (onSet("last"), button.current?.focus())} data-testid="set-last-line">
+            Set as last line
+          </button>
+        </div>
+      )}
+    </span>
   );
 }
 

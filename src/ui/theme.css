@@ -678,6 +678,158 @@ select {
   border-color: color-mix(in srgb, var(--fail) 45%, var(--line-strong));
   color: var(--fail);
 }
+.view-switch .export-action {
+  margin-left: auto;
+}
+.view-switch .investigate ~ .export-action {
+  margin-left: 8px;
+}
+.export-report {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px 16px;
+  margin: 12px 0;
+  display: grid;
+  gap: 10px;
+}
+.export-report-head,
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 14px;
+}
+.export-actions {
+  justify-content: flex-start;
+}
+.export-report h4,
+.export-report p,
+.export-report ul {
+  margin: 0;
+}
+.export-sections ul {
+  padding-left: 18px;
+}
+.export-excerpts {
+  display: grid;
+  gap: 8px;
+}
+.export-excerpt {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.export-excerpt figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.excerpt-lines {
+  margin: 0;
+  padding: 6px 10px 6px 64px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.excerpt-lines mark.masked {
+  background: color-mix(in srgb, var(--fail) 22%, transparent);
+  color: var(--ink);
+  border-radius: 3px;
+}
+.excerpt-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 10px;
+}
+.excerpt-picker input {
+  width: 7em;
+}
+.excerpt-picker-title {
+  font-weight: 600;
+}
+.excerpt-range {
+  flex-basis: 100%;
+  margin: 0;
+}
+.excerpt-range[data-state="invalid"] {
+  color: var(--fail);
+}
+.row.in-excerpt {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+/* A line's report menu sits in the free space left of its number, so nothing shifts. */
+.ln-menu {
+  position: absolute;
+  left: 2px;
+  top: 0;
+  z-index: 1;
+}
+.ln-menu-btn {
+  width: 16px;
+  height: 18px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  line-height: 18px;
+  opacity: 0;
+}
+.row:hover .ln-menu-btn,
+.row.menu-open .ln-menu-btn,
+.ln-menu-btn:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .ln-menu-btn {
+    opacity: 0.6;
+  }
+}
+/* Below the line and right of the number column: the line and the numbers of the lines below stay readable. */
+.ln-menu-list {
+  position: absolute;
+  left: 66px;
+  top: 20px;
+  z-index: 3;
+  display: grid;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+  font-family: inherit;
+  white-space: nowrap;
+}
+.ln-menu-list button {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 4px 8px;
+}
+.ln-menu-list button:hover,
+.ln-menu-list button:focus-visible {
+  background: var(--accent-soft);
+}
+.excerpt-picker > p,
+.excerpt-picker > div {
+  flex-basis: 100%;
+  margin: 0;
+}
 .impact {
   border: 1px solid var(--line);
   border-left: 3px solid var(--fail);

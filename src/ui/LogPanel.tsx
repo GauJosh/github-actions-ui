@@ -6,6 +6,7 @@ import { hasLogOutput, locateStep, mapSteps, targetLine, type LogMarkers, type S
 import type { Job, JobRef, Step } from "../domain/types";
 import type { LogLoader, LogSnapshot } from "../logs/download/loader";
 import { count, logStatusText, mb } from "./copy";
+import { ExcerptPicker, parseRange, type ExcerptRange, type ReportExcerpts } from "./ExcerptPicker";
 import { formatDuration } from "./format";
 import { LogControls, ViewDescription } from "./LogControls";
 import { setLogPrefs, useLogPrefs, type LogPrefs } from "./log-prefs";
@@ -26,8 +27,11 @@ function useLoader(env: Environment, ref: JobRef): LogLoader {
   return loader;
 }
 
-/** `highlight`: search text to apply when the log opens (e.g. from a pipeline-wide search result). */
-type PanelProps = { job: Job; line?: number; step?: number; links: LogLinks; highlight?: string };
+/**
+ * `highlight`: search text to apply when the log opens (e.g. from a pipeline-wide search result).
+ * `report`: the investigation report's excerpts, when lines of this log can be added to it.
+ */
+type PanelProps = { job: Job; line?: number; step?: number; links: LogLinks; highlight?: string; report?: ReportExcerpts };
 
 export function LogPanel({ env, jobRef, ...rest }: PanelProps & { env: Environment; jobRef: JobRef }) {
   const loader = useLoader(env, jobRef);
@@ -53,7 +57,7 @@ function useThrottled<T>(value: T, ms: number): T {
   return shown;
 }
 
-function LoadedLogPanel({ loader, job, line, step, links, highlight }: PanelProps & { loader: LogLoader }) {
+function LoadedLogPanel({ loader, job, line, step, links, highlight, report }: PanelProps & { loader: LogLoader }) {
   const snap = useSyncExternalStore(
     useCallback((onChange: () => void) => loader.subscribe(onChange), [loader]),
     () => loader.snapshot,
@@ -97,6 +101,12 @@ function LoadedLogPanel({ loader, job, line, step, links, highlight }: PanelProp
   const location = step !== undefined && mapping && job.steps ? locateStep(job.steps, mapping, step) : undefined;
   const segment = location?.kind === "segment" ? location.segment : undefined;
   const target = line ?? (segment ? targetLine(segment, stepInfo) : undefined);
+  // The report excerpt's range for this job (the panel is per job) and step: the URL's line or the step's range
+  // until the user sets a boundary, typed or from a line's menu.
+  const [picked, setPicked] = useState<ExcerptRange & { step?: number }>();
+  const excerptRange: ExcerptRange = picked && picked.step === step ? picked : { from: String(line ?? segment?.startLine ?? 1), to: String(line ?? segment?.endLine ?? 1) };
+  const parsedRange = parseRange(excerptRange);
+  const setExcerptRange = (r: ExcerptRange) => setPicked({ ...r, step });
 
   // Bring the step's evidence into view when a step is chosen.
   const locatorRef = useRef<HTMLDivElement>(null);
@@ -313,9 +323,20 @@ function LoadedLogPanel({ loader, job, line, step, links, highlight }: PanelProp
           matcher={matcher}
           hrefFor={links.line}
           onExpand={expand}
+          excerpt={
+            report && status === "complete"
+              ? {
+                  ...("start" in parsedRange && { start: parsedRange.start, end: parsedRange.end }),
+                  set: (which, n) => setExcerptRange(which === "first" ? { ...excerptRange, from: String(n) } : { ...excerptRange, to: String(n) }),
+                }
+              : undefined
+          }
         />
       )}
       {line !== undefined && showFull && line > snap.lines && <p className="note">Line {line} is not loaded yet.</p>}
+      {report && showFull && (
+        <ExcerptPicker loader={loader} job={job} loaded={snap.lines} complete={status === "complete"} mapping={mapping} range={excerptRange} onRange={setExcerptRange} report={report} />
+      )}
 
       <details className="diagnostics">
         <summary>Diagnostics</summary>
