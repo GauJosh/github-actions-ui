@@ -1,6 +1,6 @@
 // Releases and their tags (SYNTHETIC repositories, tags, commits and releases).
 import { describe, expect, it } from "vitest";
-import { releaseEvidence, type EvidenceInput } from "./release-evidence";
+import { releaseEvidence, releaseNotes, type EvidenceInput } from "./release-evidence";
 import { MAX_TAG_DEPTH, releaseOf, resolveTag, toRelease, type GitHubRelease, type TagLookup } from "./release-tags";
 
 const C = "c".repeat(40);
@@ -167,5 +167,44 @@ describe("releases in the run's evidence", () => {
   it("releases not loaded, or none confirmed for the commit", () => {
     expect(releaseEvidence({ repo, run, deployments: [], releases: null }).notes).toContain("Releases were not loaded.");
     expect(releaseEvidence({ repo, run, deployments: [], releases: [] }).notes).toContain("No release's tag is confirmed to point to this commit; not every deployment has a release.");
+  });
+});
+
+describe("release notes for a report section of releases alone", () => {
+  const run: EvidenceInput["run"] = { id: 500, head_sha: C, conclusion: "success", html_url: RUN };
+  const NO_DEPLOYMENT = "The run succeeded, but GitHub lists no deployment of its commit: a successful run is not a deployment.";
+
+  it("a deployment-only note stays with the deployments and is never among the release notes", () => {
+    const input: EvidenceInput = { repo, run, deployments: [], releases: [{ release: rel(1, "v0.9.0"), tag: loaded(ref("v0.9.0", "commit", OTHER)) }] };
+    // The shared summary holds both kinds of note (what the export used to copy into the releases section).
+    expect(releaseEvidence(input).notes).toEqual([NO_DEPLOYMENT, "No release's tag is confirmed to point to this commit; not every deployment has a release."]);
+    // The deployments section's notes (from the deployments alone) keep it.
+    expect(releaseEvidence({ repo, run, deployments: [] }).notes).toEqual([NO_DEPLOYMENT]);
+    expect(releaseNotes(input)).toEqual(["No release's tag is confirmed to point to this commit; not every deployment has a release."]);
+  });
+
+  it("'deployments were not loaded' is not a release note; release notes are kept whole and in order", () => {
+    const input: EvidenceInput = {
+      repo,
+      run,
+      deployments: null,
+      releases: [
+        { release: rel(1, "v1.0.0"), tag: loaded(ref("v1.0.0", "commit", C)) },
+        { release: rel(4, "v1.1.0"), tag: { state: "not found" } },
+        { release: { id: 5 }, tag: { state: "not loaded" } },
+      ],
+    };
+    expect(releaseEvidence(input).notes[0]).toBe("Deployments were not loaded, so it is not known whether this commit was deployed.");
+    expect(releaseNotes(input)).toEqual([
+      "1 release's tag was not resolved to a commit; how it relates to this commit is unknown.",
+      "1 release was left out because GitHub's response lacked expected fields.",
+    ]);
+  });
+
+  it("an unknown commit concerns releases too; artifact notes are never release notes", () => {
+    const unknown = releaseNotes({ repo, run: { ...run, head_sha: "" }, deployments: [], releases: [] });
+    expect(unknown[0]).toBe("The run's commit is unknown, so nothing can be tied to it by commit.");
+    expect(unknown).not.toContain(NO_DEPLOYMENT);
+    expect(releaseNotes({ repo, run, deployments: [], releases: [], artifacts: null })).not.toContain("Artifacts were not loaded.");
   });
 });

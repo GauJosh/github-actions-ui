@@ -177,3 +177,22 @@ test("export: switching attempts or runs never exports stale evidence", async ({
   await expect(section(page, "artifacts")).toHaveAttribute("data-state", "not loaded");
   for (const name of ["deployments", "releases", "comparison"]) await expect(section(page, name)).toHaveAttribute("data-state", "not loaded");
 });
+
+test("export: a deployment note stays in the deployments section and is not copied into the releases section", async ({ page }) => {
+  await forbidGitHub(page);
+  // 990000126 succeeded; GitHub lists no deployment of its commit, and release v1.3.0 resolves to it.
+  await page.goto(synthetic(990000126));
+  await page.getByTestId("load-deployments").click();
+  await page.getByTestId("load-releases").click();
+  await expect(page.getByTestId("release-confirmed")).toHaveCount(1);
+  await page.getByTestId("export-report").click();
+  await expect(section(page, "deployments")).toHaveAttribute("data-state", "included");
+  await expect(section(page, "releases")).toHaveAttribute("data-state", /included|partial/);
+  const report = JSON.parse((await download(page)).text) as InvestigationReport;
+  const NO_DEPLOYMENT = "The run succeeded, but GitHub lists no deployment of its commit: a successful run is not a deployment.";
+  expect(report.deployments.data!.notes).toContain(NO_DEPLOYMENT);
+  expect(report.releases.data!.notes).not.toContain(NO_DEPLOYMENT);
+  expect(report.releases.data!.notes.some((n) => /deployments? (were not loaded|of (its|this run's) commit)/i.test(n))).toBe(false);
+  // The release findings themselves are unchanged.
+  expect(report.releases.data!.items.find((r) => r.tag === "v1.3.0")).toMatchObject({ commitMatch: "confirmed commit" });
+});

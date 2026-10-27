@@ -11,7 +11,7 @@ import type { Environment } from "../../app/environment";
 import { compareRuns } from "../../domain/compare/runs";
 import { artifactEvidence } from "../../domain/insights/artifacts";
 import type { Impact } from "../../domain/insights/impact";
-import { releaseEvidence } from "../../domain/insights/release-evidence";
+import { releaseEvidence, releaseNotes } from "../../domain/insights/release-evidence";
 import { buildReport, MASK, NO_CAUSE_NOTE, reportFilename, validateReport, type ExcerptInput, type InvestigationReport, type Loaded, type ReportInput, type SectionState } from "../../domain/report/report";
 import type { Job, Run, RunRef } from "../../domain/types";
 import type { LoadedArtifacts } from "../../runs/artifacts";
@@ -109,7 +109,8 @@ function cachedEvidence(client: QueryClient, env: Environment, ref: RunRef, late
     : !r
       ? { state: "unavailable", reason: rq.state.status === "error" ? message(rq.state.error) : "Releases were still loading." }
       : (() => {
-          const e = releaseEvidence({ repo, run: shown, deployments: loadedDeployments?.deployments ?? null, releases: r.releases });
+          const evidenceInput = { repo, run: shown, deployments: loadedDeployments?.deployments ?? null, releases: r.releases };
+          const e = releaseEvidence(evidenceInput);
           const missing = [
             rq.state.status === "error" && `The last release check failed: ${message(rq.state.error)}`,
             rq.state.status === "pending" && "A further release check was still loading.",
@@ -117,7 +118,8 @@ function cachedEvidence(client: QueryClient, env: Environment, ref: RunRef, late
             r.moreReleases && "GitHub lists older releases that were not read.",
             r.failed.length > 0 && `Tag lookups failed for ${plural(r.failed.length, "release")}.`,
           ].filter((m): m is string => Boolean(m));
-          return { state: "loaded", value: { releases: e.releases, malformedReleases: e.malformedReleases, notes: e.notes }, missing };
+          // Only release notes: the summary's deployment notes belong to the deployments section.
+          return { state: "loaded", value: { releases: e.releases, malformedReleases: e.malformedReleases, notes: releaseNotes(evidenceInput) }, missing };
         })();
 
   const aq = active<LoadedArtifacts>(client, ["artifacts", env.mode, ref.owner, ref.repo, latest.id, latest.run_attempt, latest.status]);

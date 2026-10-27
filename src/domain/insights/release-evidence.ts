@@ -205,6 +205,19 @@ function deployment(input: EvidenceInput, host: string, commit: string | null, d
   };
 }
 
+const UNKNOWN_COMMIT_NOTE = "The run's commit is unknown, so nothing can be tied to it by commit.";
+
+/**
+ * The summary's notes that are about releases, for a report section of releases alone: those the releases add to what
+ * the deployments produce, and the unknown-commit note, which concerns both. Deployment notes (including "deployments
+ * were not loaded") and artifact notes are left out.
+ */
+export function releaseNotes(input: EvidenceInput): string[] {
+  const all = releaseEvidence({ ...input, artifacts: undefined }).notes;
+  const withoutReleases = new Set(releaseEvidence({ ...input, releases: undefined, artifacts: undefined }).notes);
+  return all.filter((n) => !withoutReleases.has(n) || n === UNKNOWN_COMMIT_NOTE);
+}
+
 export function releaseEvidence(input: EvidenceInput): ReleaseEvidenceSummary {
   const commit = fullSha(input.run.head_sha);
   let host = "";
@@ -214,7 +227,7 @@ export function releaseEvidence(input: EvidenceInput): ReleaseEvidenceSummary {
     // Without the run's own URL, status links cannot be checked; they are then not used.
   }
   const notes: string[] = [];
-  if (!commit) notes.push("The run's commit is unknown, so nothing can be tied to it by commit.");
+  if (!commit) notes.push(UNKNOWN_COMMIT_NOTE);
 
   const deployments: DeploymentEvidence[] = [];
   let otherCommits = 0;
