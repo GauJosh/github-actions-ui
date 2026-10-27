@@ -44,6 +44,17 @@ const server = setupServer(
     HttpResponse.json({ message: "rate" }, { status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1700000000" } }),
   ),
   http.get("https://api.github.com/repos/o/r/actions/runs/404", () => new HttpResponse(null, { status: 404 })),
+  // Run artifacts (SYNTHETIC): two pages, and failures on the same endpoint.
+  http.get("https://api.github.com/repos/o/r/actions/runs/7/artifacts", ({ request }) =>
+    new URL(request.url).searchParams.get("page") === "2"
+      ? HttpResponse.json({ total_count: 2, artifacts: [{ id: 2 }] })
+      : HttpResponse.json({ total_count: 2, artifacts: [{ id: 1 }] }, { headers: { Link: '<https://api.github.com/repos/o/r/actions/runs/7/artifacts?per_page=100&page=2>; rel="next"' } }),
+  ),
+  http.get("https://api.github.com/repos/o/r/actions/runs/404/artifacts", () => HttpResponse.json({ message: "Not Found" }, { status: 404 })),
+  http.get("https://api.github.com/repos/o/r/actions/runs/401/artifacts", () => new HttpResponse(null, { status: 401 })),
+  http.get("https://api.github.com/repos/o/r/actions/runs/403/artifacts", () => HttpResponse.json({ message: "Resource not accessible by integration" }, { status: 403 })),
+  http.get("https://api.github.com/repos/o/r/actions/runs/429/artifacts", () => HttpResponse.json({ message: "slow down" }, { status: 429, headers: { "retry-after": "60" } })),
+  http.get("https://api.github.com/repos/o/r/actions/runs/500/artifacts", () => new HttpResponse(null, { status: 500 })),
   http.get("http://localhost:5173/__fixtures/api/repos/o/r/actions/runs/7", () => HttpResponse.json({ id: 7 })),
   http.get("https://api.github.com/user/repos", ({ request }) =>
     HttpResponse.json([{ full_name: "o/r", name: "r", owner: { login: "o" }, private: true }], {
@@ -164,6 +175,30 @@ describe("repository, workflow and run-list calls", () => {
     expect(await live.getWorkflowFile({ owner: "o", repo: "r" }, ".github/workflows/ci.yml", "abc123")).toBe(WORKFLOW_TEXT);
     const error = await live.getWorkflowFile({ owner: "o", repo: "r" }, ".github/workflows/ci.yml", "other").catch((e: unknown) => e);
     expect((error as GitHubError).failure).toEqual({ kind: "not-found-or-no-permission" });
+  });
+});
+
+describe("run artifacts", () => {
+  it("lists one run's artifacts, 100 per page, with GET only, and reports a next page", async () => {
+    const first = await live.listRunArtifacts(ref);
+    expect(first).toEqual({ body: { total_count: 2, artifacts: [{ id: 1 }] }, hasNext: true });
+    expect(await live.listRunArtifacts(ref, 2)).toEqual({ body: { total_count: 2, artifacts: [{ id: 2 }] }, hasNext: false });
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+      "GET https://api.github.com/repos/o/r/actions/runs/7/artifacts?per_page=100",
+      "GET https://api.github.com/repos/o/r/actions/runs/7/artifacts?per_page=100&page=2",
+    ]);
+  });
+
+  it.each([
+    [404, { kind: "not-found-or-no-permission" }],
+    [401, { kind: "auth-failed" }],
+    [403, { kind: "permission", detail: "Resource not accessible by integration" }],
+    [429, { kind: "rate-limited" }],
+    [500, { kind: "http-error", status: 500 }],
+  ])("keeps the classification of HTTP %s", async (runId, failure) => {
+    const error = await live.listRunArtifacts({ ...ref, runId }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).failure).toEqual(failure);
   });
 });
 

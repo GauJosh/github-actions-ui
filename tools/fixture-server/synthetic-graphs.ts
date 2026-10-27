@@ -609,6 +609,143 @@ function historyEdgeRuns(): SyntheticRun[] {
   return [edge(990000130, 300, "success"), edge(990000131, 290, "cancelled"), untimed, reversed, edge(990000134, 260, "in_progress")];
 }
 
+/**
+ * GitHub deployments of synthetic commits, each with its statuses, or the HTTP failure its statuses request returns.
+ * The commit of 990000127 ("[synthetic] Nightly build") has deployments that link to that run, to another run of the
+ * same commit's workflow, to a site outside GitHub, to nothing parseable, none at all, and one whose statuses fail.
+ */
+export type SyntheticDeployment = { deployment: Record<string, unknown> & { id: number; sha: string }; statuses: Record<string, unknown>[] | { status: number; message: string } };
+
+export function syntheticDeployments(): SyntheticDeployment[] {
+  const commit = sha(990000127);
+  const run = (id: number) => `${HTML}/actions/runs/${id}/job/${id * 100 + 1}`;
+  const deployment = (id: number, environment: string, minutes: number) => ({
+    id,
+    sha: commit,
+    ref: "main",
+    task: "deploy",
+    environment,
+    original_environment: environment,
+    production_environment: false,
+    transient_environment: false,
+    created_at: iso(-320 * 60 + minutes * 60),
+    updated_at: iso(-320 * 60 + minutes * 60 + 60),
+    creator: { login: "synthetic-user" },
+  });
+  const status = (id: number, state: string, minutes: number, link?: string) => ({ id, state, created_at: iso(-320 * 60 + minutes * 60), ...(link !== undefined && { target_url: link, log_url: link }) });
+  const named = (env: string, list: ReturnType<typeof status>[]) => list.map((x) => ({ ...x, environment: env }));
+  return [
+    // Newest first, as GitHub lists statuses.
+    { deployment: deployment(9910001, "synthetic-env-a", 4), statuses: named("synthetic-env-a", [status(99100013, "success", 5, run(990000127)), status(99100012, "in_progress", 4, run(990000127)), status(99100011, "queued", 4, run(990000127))]) },
+    { deployment: deployment(9910002, "synthetic-env-b", 6), statuses: named("synthetic-env-b", [status(99100021, "success", 7, run(990000126))]) },
+    { deployment: deployment(9910003, "synthetic-env-b", 8), statuses: { status: 500, message: "synthetic failure" } },
+    { deployment: deployment(9910004, "synthetic-env-c", 9), statuses: [] },
+    { deployment: deployment(9910005, "synthetic-env-c", 10), statuses: named("synthetic-env-c", [status(99100052, "failure", 11, "https://deploy.example.test/synthetic/5"), status(99100051, "pending", 10, "not a url")]) },
+    // 990000102's commit (CD workflow: deploy-dev uses dev, deploy-staging staging, deploy-prod's matrix production;
+    // job ids are run id * 100 + index + 1), for joining job environments to deployments.
+    ...[
+      { deployment: { ...deployment(9910201, "dev", 2), sha: sha(990000102) }, statuses: named("dev", [status(99102011, "success", 3, `${HTML}/actions/runs/990000102/job/99000010204`)]) },
+      { deployment: { ...deployment(9910202, "staging", 4), sha: sha(990000102) }, statuses: named("staging", [status(99102021, "success", 5, `${HTML}/actions/runs/990000102`)]) },
+      { deployment: { ...deployment(9910203, "production", 6), sha: sha(990000102) }, statuses: named("production", [status(99102031, "in_progress", 6, `${HTML}/actions/runs/990000102/job/99000010207`)]) },
+      { deployment: { ...deployment(9910204, "production", 7), sha: sha(990000102) }, statuses: [] },
+      { deployment: { ...deployment(9910205, "synthetic-preview", 8), sha: sha(990000102) }, statuses: [] },
+    ],
+  ];
+}
+
+export type SyntheticReleases = {
+  releases: unknown[];
+  /** Tag refs by tag name; a number is the HTTP status GitHub answers instead. */
+  refs: Map<string, unknown>;
+  /** Annotated tag objects by SHA. */
+  objects: Map<string, unknown>;
+};
+
+/**
+ * Releases of the synthetic repository, newest first, for the release evidence of run 990000127's commit: a
+ * lightweight tag on that commit, a nested annotated tag on it (prerelease), a tag on another commit, a tag whose ref
+ * request fails, a tag that no longer exists, a draft, and older releases on other commits beyond the lookup cap.
+ */
+export function syntheticReleases(): SyntheticReleases {
+  const commit = sha(990000127);
+  const objectSha = (n: number) => createHash("sha1").update(`synthetic-tag-${n}`).digest("hex");
+  const release = (id: number, tag: string, minutes: number, extra: Record<string, unknown> = {}) => ({
+    id,
+    tag_name: tag,
+    name: `[synthetic] ${tag}`,
+    target_commitish: "main",
+    draft: false,
+    prerelease: false,
+    created_at: iso(-300 * 60 + minutes * 60),
+    published_at: iso(-300 * 60 + minutes * 60 + 30),
+    html_url: `${HTML}/releases/tag/${tag}`,
+    author: { login: "synthetic-user" },
+    ...extra,
+  });
+  const ref = (tag: string, type: string, target: string) => ({ ref: `refs/tags/${tag}`, object: { type, sha: target } });
+  const older = Array.from({ length: 7 }, (_, i) => ({ tag: `v0.${9 - i}.0`, commit: sha(990000120 + i) }));
+  const releases = [
+    release(9920001, "v1.5.0", 20, { draft: true, published_at: null, html_url: `${HTML}/releases/tag/untagged-synthetic` }),
+    release(9920002, "v1.4.0", 15),
+    release(9920003, "v1.4.0-rc.1", 10, { prerelease: true }),
+    release(9920004, "v1.3.0", 5),
+    release(9920005, "v1.2.0", 4),
+    release(9920006, "v1.1.0", 3),
+    ...older.map((o, i) => release(9920010 + i, o.tag, -i)),
+  ];
+  const refs = new Map<string, unknown>([
+    ["v1.4.0", ref("v1.4.0", "commit", commit)],
+    ["v1.4.0-rc.1", ref("v1.4.0-rc.1", "tag", objectSha(1))],
+    ["v1.3.0", ref("v1.3.0", "commit", sha(990000126))],
+    ["v1.2.0", 502],
+    // v1.1.0 and the draft's v1.5.0: no such tag (404).
+    ...older.map((o): [string, unknown] => [o.tag, ref(o.tag, "commit", o.commit)]),
+  ]);
+  const objects = new Map<string, unknown>([
+    [objectSha(1), { sha: objectSha(1), tag: "v1.4.0-rc.1", message: "[synthetic]", object: { type: "tag", sha: objectSha(2) } }],
+    [objectSha(2), { sha: objectSha(2), tag: "v1.4.0-rc.1-signed", message: "[synthetic]", object: { type: "commit", sha: commit } }],
+  ]);
+  return { releases, refs, objects };
+}
+
+/**
+ * Artifacts by run (GitHub: GET …/actions/runs/{id}/artifacts), metadata only; there is nothing to download. Run
+ * 990000127 (one attempt) lists 104, so 100 per page makes two pages: a build output with a digest, an expired
+ * report, one whose `workflow_run` is null, and 101 test shards. The re-run 990000124 lists one artifact, which
+ * GitHub's data does not tie to either attempt. Other runs list none.
+ */
+export function syntheticArtifacts(): Map<number, Record<string, unknown>[]> {
+  const API = `/repos/${SYNTHETIC_OWNER}/${SYNTHETIC_REPO}/actions/artifacts`;
+  const artifact = (id: number, runId: number, name: string, minutes: number, extra: Record<string, unknown> = {}) => ({
+    id,
+    node_id: `SYNTHETIC_${id}`,
+    name,
+    size_in_bytes: 1024 * (id % 97 + 1),
+    url: `https://api.github.com${API}/${id}`,
+    archive_download_url: `https://api.github.com${API}/${id}/zip`,
+    expired: false,
+    digest: null,
+    created_at: iso(-320 * 60 + minutes * 60),
+    updated_at: iso(-320 * 60 + minutes * 60),
+    expires_at: iso(-320 * 60 + minutes * 60 + 90 * 86400),
+    workflow_run: { id: runId, repository_id: 990000001, head_repository_id: 990000001, head_branch: "main", head_sha: sha(runId) },
+    ...extra,
+  });
+  const run = 990000127;
+  return new Map([
+    [
+      run,
+      [
+        artifact(9930001, run, "[synthetic] build-output", 2, { digest: `sha256:${createHash("sha256").update("synthetic-artifact-9930001").digest("hex")}` }),
+        artifact(9930002, run, "[synthetic] coverage-report", 3, { expired: true, expires_at: iso(-300 * 60) }),
+        artifact(9930003, run, "[synthetic] test-results", 3, { workflow_run: null }),
+        ...Array.from({ length: 101 }, (_, i) => artifact(9930004 + i, run, `[synthetic] test-shard-${String(i + 1).padStart(3, "0")}`, 4)),
+      ],
+    ],
+    [990000124, [artifact(9930201, 990000124, "[synthetic] build-output", 2)]],
+  ]);
+}
+
 export function syntheticGraphRuns(): SyntheticRun[] {
   return [...SPECS.map(makeRun), attemptMismatchRun(), ...historyRuns(), ...historyEdgeRuns()];
 }

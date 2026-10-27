@@ -36,6 +36,8 @@ import { GraphCanvas, nodeHeight } from "./GraphCanvas";
 import { JobDetails } from "./JobDetails";
 import { JobList } from "./JobList";
 import { RunCompare } from "./RunCompare";
+import { RunArtifacts } from "./RunArtifacts";
+import { RunDeployments } from "./RunDeployments";
 import { RunHistory } from "./RunHistory";
 import { RunSearch } from "./RunSearch";
 import { PhaseDetail } from "./PhaseDetail";
@@ -501,6 +503,9 @@ export function RunExplorer({ env, run: ref, route }: Props) {
           {latestAttempt > 1 ? "; it may belong to another attempt (choose one above)." : "."}
         </p>
       )}
+      {run.data && <RunDeployments key={run.data.id} env={env} runRef={ref} run={run.data} records={deployments} jobs={jobs.data} />}
+      {/* The latest run data, not the attempt on screen, decides the attempt wording; the attempt is passed separately. */}
+      <RunArtifacts key={`${ref.owner}/${ref.repo}/${latest.data.id}`} env={env} runRef={ref} latest={latest.data} viewedAttempt={attempt} />
     </div>
   );
 }

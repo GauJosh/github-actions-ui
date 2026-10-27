@@ -11,7 +11,7 @@ import { gunzipSync } from "node:zlib";
 import { NOT_PREPARED, fixtureDir, verifyFixtures } from "../fixtures/fixtures.ts";
 import { parseLock } from "../fixtures/lockfile.ts";
 import { SYNTHETIC_LARGE, syntheticJobs, syntheticLog, syntheticRun } from "./synthetic.ts";
-import { EMPTY_REPO, LARGE_LOG_WORKFLOW, SYNTHETIC_OWNER, SYNTHETIC_REPO, largeLogRunExtras, syntheticGraphRuns } from "./synthetic-graphs.ts";
+import { EMPTY_REPO, LARGE_LOG_WORKFLOW, SYNTHETIC_OWNER, SYNTHETIC_REPO, largeLogRunExtras, syntheticArtifacts, syntheticDeployments, syntheticGraphRuns, syntheticReleases } from "./synthetic-graphs.ts";
 import { ENTERPRISE_OWNER, ENTERPRISE_REPO, enterpriseRuns, gallery } from "./enterprise.ts";
 
 export const FIXTURE_PREFIX = "/__fixtures";
@@ -353,6 +353,38 @@ export function createFixtureMiddleware(options: { repoRoot: string; lockPath: s
       return send(res, 200, { total_count: filtered.length, workflow_runs: page }, link ? { Link: link } : {});
     }
 
+    // Deployments of one commit, and one deployment's statuses (GitHub: GET …/deployments?sha= and …/deployments/{id}/statuses).
+    if (rest === "/deployments") {
+      const commit = url.searchParams.get("sha");
+      const list = owner === SYNTHETIC_OWNER && repo === SYNTHETIC_REPO ? syntheticDeployments().filter((d) => !commit || d.deployment.sha === commit) : [];
+      return send(res, 200, list.map((d) => d.deployment));
+    }
+    m = /^\/deployments\/(\d+)\/statuses$/.exec(rest);
+    if (m) {
+      const found = owner === SYNTHETIC_OWNER && repo === SYNTHETIC_REPO ? syntheticDeployments().find((d) => d.deployment.id === Number(m![1])) : undefined;
+      if (!found) return send(res, 404, { message: "Not Found" });
+      if (!Array.isArray(found.statuses)) return send(res, found.statuses.status, { message: found.statuses.message });
+      return send(res, 200, found.statuses);
+    }
+
+    // Releases, tag refs and annotated tag objects (GitHub: GET …/releases, …/git/ref/tags/{tag}, …/git/tags/{sha}).
+    if (rest === "/releases") {
+      const { page, link } = paginate(owner === SYNTHETIC_OWNER && repo === SYNTHETIC_REPO ? syntheticReleases().releases : [], url, origin);
+      return send(res, 200, page, link ? { Link: link } : {});
+    }
+    m = /^\/git\/ref\/tags\/(.+)$/.exec(rest);
+    if (m) {
+      const found = owner === SYNTHETIC_OWNER && repo === SYNTHETIC_REPO ? syntheticReleases().refs.get(decodeURIComponent(m[1]!)) : undefined;
+      if (found === undefined) return send(res, 404, { message: "Not Found" });
+      if (typeof found === "number") return send(res, found, { message: "synthetic failure" });
+      return send(res, 200, found);
+    }
+    m = /^\/git\/tags\/([0-9a-f]{40})$/.exec(rest);
+    if (m) {
+      const found = owner === SYNTHETIC_OWNER && repo === SYNTHETIC_REPO ? syntheticReleases().objects.get(m[1]!) : undefined;
+      return found ? send(res, 200, found) : send(res, 404, { message: "Not Found" });
+    }
+
     // One attempt of a run, and its jobs (GitHub: GET …/runs/{id}/attempts/{n} and …/attempts/{n}/jobs).
     m = /^\/actions\/runs\/(\d+)\/attempts\/(\d+)(\/jobs)?$/.exec(rest);
     if (m) {
@@ -366,6 +398,16 @@ export function createFixtureMiddleware(options: { repoRoot: string; lockPath: s
       if (!m[3]) return send(res, 200, attempt.run);
       if (attempt.jobsError) return send(res, attempt.jobsError.status, { message: attempt.jobsError.message });
       return send(res, 200, attempt.jobs());
+    }
+
+    // A run's artifacts, metadata only (GitHub: GET …/actions/runs/{id}/artifacts); paginated, and empty for runs without any.
+    m = /^\/actions\/runs\/(\d+)\/artifacts$/.exec(rest);
+    if (m) {
+      const run = corpus.runs.get(Number(m[1]));
+      if (!run || run.owner !== owner || run.repo !== repo) return send(res, 404, { message: "Not Found" });
+      const all = owner === SYNTHETIC_OWNER && repo === SYNTHETIC_REPO ? (syntheticArtifacts().get(run.run.id) ?? []) : [];
+      const { page, link } = paginate(all, url, origin);
+      return send(res, 200, { total_count: all.length, artifacts: page }, link ? { Link: link } : {});
     }
 
     m = /^\/actions\/runs\/(\d+)(\/jobs|\/approvals|\/pending_deployments)?$/.exec(rest);

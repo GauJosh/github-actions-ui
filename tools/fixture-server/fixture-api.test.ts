@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { artifactEvidence } from "../../src/domain/insights/artifacts.ts";
+import { loadArtifacts } from "../../src/runs/artifacts.ts";
 import { createFixtureMiddleware } from "./fixture-api.ts";
 
 const middleware = createFixtureMiddleware({ repoRoot: resolve("."), lockPath: resolve("fixtures.lock.json") });
@@ -93,6 +95,44 @@ describe("fixture API", () => {
     expect(log.body).toContain("##[error]Process completed with exit code 1.");
     const skipped = jobs.find((j) => j.conclusion === "skipped")!;
     expect((await call(`/repos/fixtures/synthetic/actions/jobs/${skipped.id}/logs`)).status).toBe(404);
+  });
+
+  it("lists a synthetic run's artifacts in pages of 100, metadata only, and none for other runs", async () => {
+    const path = "/repos/fixtures/synthetic/actions/runs/990000127/artifacts";
+    const first = await call(`${path}?per_page=100`);
+    const body = JSON.parse(first.body) as { total_count: number; artifacts: { name: string; expired: boolean; workflow_run: unknown }[] };
+    expect(body.total_count).toBe(104);
+    expect(body.artifacts).toHaveLength(100);
+    expect(body.artifacts.every((a) => a.name.startsWith("[synthetic]"))).toBe(true);
+    expect(body.artifacts.filter((a) => a.expired)).toHaveLength(1);
+    expect(body.artifacts.filter((a) => a.workflow_run === null)).toHaveLength(1);
+    expect(first.headers.Link).toBe(`<http://127.0.0.1:4317/__fixtures/api${path}?per_page=100&page=2>; rel="next"`);
+    expect(JSON.parse((await call(`${path}?per_page=100&page=2`)).body).artifacts).toHaveLength(4);
+    expect(JSON.parse((await call("/repos/fixtures/synthetic/actions/runs/990000126/artifacts")).body)).toEqual({ total_count: 0, artifacts: [] });
+    expect((await call("/repos/fixtures/synthetic/actions/runs/1/artifacts")).status).toBe(404);
+    expect((await call(`${path}/9930001/zip`)).status).toBe(404);
+  });
+
+  it("feeds the artifact loader and model end to end", async () => {
+    const client = {
+      listRunArtifacts: async (r: { owner: string; repo: string; runId: number }, page = 1) => {
+        const res = await call(`/repos/${r.owner}/${r.repo}/actions/runs/${r.runId}/artifacts?per_page=100${page > 1 ? `&page=${page}` : ""}`);
+        return { body: JSON.parse(res.body) as unknown, hasNext: Boolean(res.headers.Link) };
+      },
+    };
+    const run = JSON.parse((await call("/repos/fixtures/synthetic/actions/runs/990000127")).body) as { id: number; head_sha: string; status: string; run_attempt: number };
+    const loaded = await loadArtifacts(client, { owner: "fixtures", repo: "synthetic", runId: run.id });
+    expect(loaded).toMatchObject({ pages: 2, totalCount: 104, morePages: false, cancelled: false });
+    const e = artifactEvidence({ run, listing: loaded });
+    expect(e).toMatchObject({ listing: "complete", read: 104, malformed: 0, attempt: "single attempt when checked" });
+    expect(e.artifacts.filter((a) => a.association === "confirmed")).toHaveLength(103);
+    expect(e.artifacts.find((a) => a.expired)).toMatchObject({ name: "[synthetic] coverage-report", association: "confirmed" });
+    expect(e.artifacts.find((a) => a.association === "unknown")!.name).toBe("[synthetic] test-results");
+
+    const rerun = JSON.parse((await call("/repos/fixtures/synthetic/actions/runs/990000124")).body) as typeof run;
+    const r = artifactEvidence({ run: rerun, listing: await loadArtifacts(client, { owner: "fixtures", repo: "synthetic", runId: rerun.id }) });
+    expect(r).toMatchObject({ attempt: "whole run", read: 1 });
+    expect(r.artifacts[0]!.association).toBe("confirmed");
   });
 
   it("is read-only and scoped to known repositories", async () => {

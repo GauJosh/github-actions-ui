@@ -131,6 +131,46 @@ export function createGitHubClient(options: { apiBase: string; transport: Transp
       return (await getJson<unknown[]>(`${repoPath(ref)}/actions/runs/${ref.runId}/pending_deployments`)).body;
     },
 
+    /**
+     * Deployments of one commit (`GET /repos/{o}/{r}/deployments?sha=`), first page of 100. This is
+     * not the repository's deployment history: only deployments GitHub records for that exact commit.
+     */
+    async listDeployments(ref: RepoRef, sha: string): Promise<{ deployments: unknown[]; hasNext: boolean }> {
+      const { body, link } = await getJson<unknown[]>(`${repoPath(ref)}/deployments?sha=${encodeURIComponent(sha)}&per_page=100`);
+      return { deployments: body, hasNext: nextPath(link, apiBase) !== null };
+    },
+
+    /** Statuses of one deployment (`GET …/deployments/{id}/statuses`), first page of 100. */
+    async getDeploymentStatuses(ref: RepoRef, deploymentId: number): Promise<{ statuses: unknown[]; hasNext: boolean }> {
+      const { body, link } = await getJson<unknown[]>(`${repoPath(ref)}/deployments/${deploymentId}/statuses?per_page=100`);
+      return { statuses: body, hasNext: nextPath(link, apiBase) !== null };
+    },
+
+    /** The repository's releases (`GET …/releases`), newest first, one page of 30. Not filtered by commit. */
+    async listReleases(ref: RepoRef, page = 1): Promise<{ releases: unknown; hasNext: boolean }> {
+      const { body, link } = await getJson<unknown>(`${repoPath(ref)}/releases?per_page=30${page > 1 ? `&page=${page}` : ""}`);
+      return { releases: body, hasNext: nextPath(link, apiBase) !== null };
+    },
+
+    /** One tag's ref by exact name (`GET …/git/ref/tags/{tag}`): a commit, or an annotated tag object. */
+    async getTagRef(ref: RepoRef, tag: string): Promise<unknown> {
+      return (await getJson<unknown>(`${repoPath(ref)}/git/ref/tags/${tag.split("/").map(encodeURIComponent).join("/")}`)).body;
+    },
+
+    /** One annotated tag object (`GET …/git/tags/{sha}`). */
+    async getTagObject(ref: RepoRef, sha: string): Promise<unknown> {
+      return (await getJson<unknown>(`${repoPath(ref)}/git/tags/${encodeURIComponent(sha)}`)).body;
+    },
+
+    /**
+     * Artifacts of one workflow run (`GET …/actions/runs/{id}/artifacts`), one page of 100: metadata only. The body
+     * is returned unchecked (`{ total_count, artifacts }` when GitHub answers as documented). Nothing is downloaded.
+     */
+    async listRunArtifacts(ref: RunRef, page = 1): Promise<{ body: unknown; hasNext: boolean }> {
+      const { body, link } = await getJson<unknown>(`${repoPath(ref)}/actions/runs/${ref.runId}/artifacts?per_page=100${page > 1 ? `&page=${page}` : ""}`);
+      return { body, hasNext: nextPath(link, apiBase) !== null };
+    },
+
     /** A file at an exact commit (Contents API). Returns its text. */
     async getWorkflowFile(ref: RepoRef, path: string, commit: string): Promise<string> {
       const encoded = path.split("/").map(encodeURIComponent).join("/");

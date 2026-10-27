@@ -27,6 +27,8 @@ export type DeploymentRecord = {
   outcome: DeploymentOutcome;
   /** Jobs that declare (or receive) this environment. */
   jobs: number;
+  /** Their ids in this run attempt. */
+  jobIds: number[];
 };
 
 /** Deployments of one run, from jobs whose environment is declared or passed by a caller (never inferred). */
@@ -64,6 +66,7 @@ export function deploymentsOf(run: Pick<Run, "id" | "run_attempt" | "head_sha">,
       ...(done && ends.at(-1) && { completedAt: ends.at(-1) }),
       outcome,
       jobs: jobs.length,
+      jobIds: jobs.map((j) => j.id),
     });
   }
   // Deployments that started, in order; the rest after them.
