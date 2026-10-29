@@ -37,6 +37,10 @@
   - **User-selected log excerpts** (requested 2026-10-27, Feature 5C): Add to report from a line range of an open, fully loaded log (one job and step per excerpt, read from the loaded log), limits refused rather than cut, long lines cut only after the user accepts, a line-by-line preview with masked text highlighted and Remove, and excerpts discarded when the run or attempt changes (ARCHITECTURE §11.13). Committed in Checkpoint 2 (Features 5A–5D).
   - **Excerpt boundaries from log rows** (requested 2026-10-27, Feature 5D): a keyboard-accessible ⋮ menu on each log line with Set as first line / Set as last line, filling the same excerpt form; the range is shown and shaded, reversed ranges are explained and cannot be added (ARCHITECTURE §11.13). Committed in Checkpoint 2 (Features 5A–5D).
   - M2's other log-exploration items (ANSI, groups, scaled scrolling, the worker cache) are still open. Q2 and Q10 remain open.
+- **Containerized hosting** (approved 2026-10-28; Hosting track below): K1–K4 were implemented and verified locally on 2026-10-28, with a pre-commit audit (K5–K6). ARCHITECTURE A10–A12, §7.4 and §11.14.
+  - K1 is the production image with a Node static server; K2 is the `charts/gha-ui` Helm chart, verified on Minikube; K3 adds documentation and CI chart validation.
+  - The app is unchanged: browser-only, read-only, with the token in memory.
+  - A backend, Gateway API access, GitOps examples and emergency execution are **not approved**. Each needs its own decision.
 - Commits and pushes each need approval.
 
 **References:**
@@ -62,6 +66,7 @@
 | **First vertical slice** | M1 | Prove the riskiest path end to end: token → run → tail-first log in the worker → log view |
 | **Subsequent MVP capabilities** | M2–M5 | Log exploration, failure overview and evidence, finding runs, comparison |
 | **Evaluation** | V1–V4 | Regression corpus, held-out protocol (Q10), measurement against S1–S7, validation of open risks |
+| **Hosting** (added 2026-10-28) | K1–K3 | Serve the unchanged app from a container and deploy it to Kubernetes with Helm |
 
 ```mermaid
 flowchart LR
@@ -349,10 +354,33 @@ Measure S1–S7 against the native UI on ≥15 corpus failures:
 
 ---
 
+## Hosting (added 2026-10-28)
+
+Containerized static hosting was approved on 2026-10-28 (ARCHITECTURE A10–A12). It deploys the existing app and does not change it: browser-only, read-only toward GitHub, with the token held in browser memory.
+
+| Step | Scope | Status |
+|---|---|---|
+| **K1** | Production image (`deploy/ui/`): Node static server, security headers from their single source, root and path-prefix hosting, non-root and read-only | Implemented; verified locally (tests, Podman container) |
+| **K2** | Helm chart (`charts/gha-ui/`): Deployment, Service, a ServiceAccount with no permissions, `helm test` | Implemented; verified on Minikube at `/` and `/gha-ui/` |
+| **K3** | Architecture record, and a CI job that lints, renders and checks the chart's invariants | Implemented and run locally; **the CI job had not run on GitHub as of 2026-10-28** |
+| **K4** | Integration review: the documented path repeated from a clean export of the tree, through Minikube install, test, upgrade, rollback and uninstall | Done locally (ARCHITECTURE §11.14); README and checker fixes; values schema tightened after the pre-commit audit |
+
+**Acceptance criteria (K1–K3):**
+- The same browser tests pass against the local server, the container and the Kubernetes Service, at both paths, with the log worker.
+- Served headers match `tools/vite/security-headers.ts` exactly.
+- `helm test` passes.
+- CI renders and checks the chart without a cluster, registry or secrets.
+
+**Possible next steps, each needing its own decision and approval:**
+- External access with a Gateway API `HTTPRoute`, verifying that headers pass through unchanged (ARCHITECTURE §12).
+- GitOps examples (Argo CD, Flux).
+- A backend and its chart. This would revise the "no backend in v1" constraint (D3) and needs a threat model first.
+- Recovery packages and emergency workflow execution. These would end the read-only constraint (D4) and are not approved.
+
 ## Not on this roadmap
 
 These are scheduled only after the MVP is validated, and each requires its own decision:
-- static hosting;
+- static hosting: *moved onto the roadmap on 2026-10-28* as containerized hosting (Hosting, above);
 - OAuth login (U2);
 - line-by-line log diff (stretch);
 - v1.x candidates (incident correlation, flake hints, test-report parsing, opt-in session token persistence);

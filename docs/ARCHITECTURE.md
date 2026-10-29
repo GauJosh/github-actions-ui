@@ -36,7 +36,7 @@ GitHub Actions UI is a **browser-only, read-only single-page app**. It has no ba
 
 | Constraint | Source |
 |---|---|
-| Web app. Chromium first, local development (`localhost`); static hosting deferred | **[D]** D2, Q1, Q6 |
+| Web app. Chromium first, local development (`localhost`); static hosting deferred. **Revised 2026-10-28:** containerized static hosting is approved (A10–A12, §7.4, §11.14). The app itself is unchanged: browser-only and read-only, with no backend | **[D]** D2, Q1, Q6; hosting approved by the user 2026-10-28 |
 | No backend, database, background services or OAuth exchange in v1 | **[D]** D3, U2 |
 | Fine-grained personal access token (PAT), pasted by the user and held in memory only. Never in URLs, logs, source control, storage or committed config | **[D]** U1, Q4 |
 | Token permissions are **provisional** until Q2 | **[D]** Q2 open |
@@ -58,6 +58,9 @@ GitHub Actions UI is a **browser-only, read-only single-page app**. It has no ba
 | **A7** | **TanStack Query** over a custom GitHub client. ETags are handled inside the client | Approved | Request deduplication, retries and cache lifetimes without writing a cache |
 | **A8** | **Large-log soft threshold: 44 MB.** Above it, loading the full log is opt-in; tail-first triage still works without it (§6.4) | **Approved provisionally** | A UX policy based on the largest real log tested (s09, 43.9 MB), **not a proven memory limit**. Worker memory grows with log size (≈ 1.09× at 44 MB) **[O]** E8. The threshold is one adjustable constant. Larger-log memory testing is future validation work (roadmap V4) |
 | **A9** | **On worker failure, re-download from byte 0.** The main thread keeps no copy of the log | Approved, **measured** | E8: an injected crash recovered byte-exact, at the cost of about 32 MB downloaded twice **[O]**. Restart and progress are visible, and repeated failures end in an explicit, recoverable error state (§6.5) |
+| **A10** | **Containerized static hosting.** The production build is served by a small Node static server (`deploy/ui/server.mjs`, `node:http` only) in a non-root, read-only container image (`deploy/ui/Dockerfile`) | Approved 2026-10-28 | Revises the "static hosting deferred" constraint (§2). It serves files only: the browser still calls GitHub directly, and the token never reaches the server (§7.4). Node's built-in server is enough for a fixed set of files and a health check, so no framework or second runtime is added. The headers it sends come from the same source as `vite preview`'s (§7.3) |
+| **A11** | **Kubernetes deployment through a Helm chart**, `charts/gha-ui` | Approved 2026-10-28 | A Deployment, Service, a ServiceAccount with no permissions, and a `helm test` pod. No RBAC, no service-account token, no backend. Verified on Minikube (§11.14). External access (Gateway API), GitOps examples, a backend and emergency execution are **future decisions**, not part of A10–A12 |
+| **A12** | **Root and path-prefix hosting from one build.** Builds reference assets and the log worker relative to the page (`base: "./"`); the server's prefix is set at runtime (`GHA_UI_BASE_PATH`) | Approved 2026-10-28 | Routes live in the URL hash, so no path depends on where the page is served. One image serves `https://host/` or `https://host/gha-ui/`; both layouts are tested in a browser, including the log worker (§11.14) |
 
 ## 4. Components
 
@@ -294,7 +297,7 @@ Backpressure is credit-based. Reading pauses while more than **8 MiB** is unackn
 
 ### 7.3 Content Security Policy
 
-App document (production build and local preview):
+App document (production build, in local preview and from the production server, §7.4):
 
 ```
 default-src 'self';
@@ -319,8 +322,31 @@ The log worker script is served with `connect-src 'none'`.
   - log text is rendered as text, never as HTML.
 - **Open details:**
   - the Vite dev server's HMR needs relaxations, limited to the local dev origin **[A]**;
-  - delivering the worker's own CSP header was verified only in the spike harness **[O]**;
+  - delivering the worker's own CSP header was verified only in the spike harness **[O]**. Since 2026-10-28 it is also checked for the production server: by tests, in its container and on Minikube (§11.14);
   - cross-origin isolation (COOP/COEP) is not required by the product. It is used only by performance tooling that measures memory.
+
+### 7.4 Hosting (A10–A12)
+
+- **The security model is unchanged.**
+  - The server sends the app's files and nothing else.
+  - The browser calls `api.github.com` and the log host directly, read-only (GET and HEAD).
+  - The token stays in the tab's memory (§7.1). It is never sent to, logged by, or stored on the server, and the server has no endpoint that accepts data.
+- **Headers have one source.**
+  - `tools/vite/security-headers.ts` holds the app CSP, the worker CSP and the common headers (`Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`).
+  - The image build writes them to a file the server reads.
+  - `deploy/ui/check-http.ts` compares what a running server sends with that source. It is used by the tests, against the container and through the Kubernetes Service.
+  - The chart's `helm test` checks the essential directives in the deployed release.
+- **Fixture mode is never hosted.** The image build is the ordinary production build: there is no fixture code, and fixture routes return 404 (§11.2).
+- **Runtime hardening, defaults enforced by the chart:**
+  - non-root UID 1000, read-only root filesystem, no volumes;
+  - all capabilities dropped, no privilege escalation, seccomp `RuntimeDefault`;
+  - no service-account token, and no Kubernetes API permissions, since the UI never calls the API;
+  - no outbound network: the image was checked with networking disabled.
+  - The chart's values schema rejects values that would weaken this, at install time. Removing seccomp from one level is allowed, as long as the other keeps it. `tools/chart/check-chart.ts` checks in CI that each such override is refused, and checks the rendered templates.
+- **Residual risks:**
+  - The hosted page is where users type a token, so whoever controls the image, or anything between the user and the pod (a proxy or CDN), can affect it. HTTPS, trusted images and immutable tags or digests are required outside local port-forwarding.
+  - A proxy that adds, removes or rewrites headers would weaken the CSP. This is not yet verified for any Gateway or Ingress.
+  - Base images are pinned by tag, not digest (`deploy/ui/README.md`).
 
 ---
 
@@ -384,7 +410,9 @@ Every case below renders as a designed, explained state, never as an error scree
 | Held-out evaluation (S2b) | Only under the Q10 protocol; never tuned against | Fresh draw per round | Node harness + manual grading |
 | Live smoke | The real API against `gha-ui-fixtures`, using the user's token in the running app only | Live | Manual checklist |
 
-CI, when a repository exists, runs lint, typecheck, unit, contract and fixture-mode E2E tests. **It needs no secrets.**
+| Hosting (A10–A12) | Static server request policy (no sockets); the production build's relative URLs; the server's headers against their source; the app and log worker at the root and under `/gha-ui/` in a browser; chart invariants on rendered templates | Production build, mock API | Vitest, Playwright, `deploy/ui/check-http.ts`, `tools/chart/check-chart.ts` |
+
+CI, when a repository exists, runs lint, typecheck, unit, contract and fixture-mode E2E tests. Since 2026-10-28 it also lints and renders the Helm chart and checks its invariants, with a pinned, checksum-verified Helm and no cluster. **It needs no secrets.**
 
 ## 11. Repository layout
 
@@ -405,6 +433,9 @@ github-actions-ui/
   tools/fixture-server/  fixture-mode API over the pinned corpus, plus a synthetic 46 MB log for A8
   tools/vite/        security headers (CSP) for preview, fixture-server plugin
   tools/eval/        Node harness: mapping checks, extraction regression, held-out runner (later milestones)
+  tools/chart/       chart invariant checks on rendered templates (A11)
+  deploy/ui/         production image: Dockerfile, static server, header generator, HTTP checks (A10, A12)
+  charts/gha-ui/     Helm chart for the UI (A11)
   tests/e2e/         Playwright (Chromium)
   docs/              ARCHITECTURE.md, ROADMAP.md
   LICENSE            Apache-2.0
@@ -447,7 +478,7 @@ Fixtures come from a **fetch script pinned to an immutable commit SHA**. Each do
   - It streams real HTTP responses with HEAD and byte ranges, so the loader is exercised the same way as against GitHub, and no second copy of a log is held on the main thread.
   - It refuses to serve anything if `.fixtures/` does not match the lockfile.
   - MSW is used for client contract tests in Node.
-  - Static hosting (deferred) would need another way to serve fixtures.
+  - Static hosting (deferred) would need another way to serve fixtures. *2026-10-28:* hosting was approved (A10) without fixtures. Hosted builds are production builds with fixture mode compiled out, so fixture mode stays a local development and test tool.
 - **Fixture mode is compiled out of production builds.**
   - A compile-time flag, `__FIXTURE_MODE__`, is true only for the dev server, unit tests, and an explicit test build (`GHA_UI_FIXTURES=1`, output in `dist-fixtures/`, used by Playwright).
   - Ordinary builds contain no fixture transport, fixture UI, fault switches or worker fault handler, and ordinary `vite preview` mounts no fixture routes. `tests/unit/build-boundary.test.ts` checks this by building and scanning the bundle, with a fixture build as the control case.
@@ -752,6 +783,84 @@ A pure model (`src/domain/report/report.ts`) that builds a shareable report of o
 - *Schema.* Unchanged (version 1): excerpts already had their place in the contract.
 - *Boundaries from log rows (Feature 5D).* While lines can be added, each rendered log row has a small ⋮ button in the free space left of its line number (no layout shift, no change to virtualization). It opens a two-item menu, **Set as first line** and **Set as last line**, that sets the same range the form's number inputs hold: the range lives in the log panel (per job, and per step in the URL) and the picker is controlled by it, so there is one selection and one set of checks. The menu button is named "Line N: report excerpt actions" (`aria-haspopup="menu"`, `aria-expanded`); opening it focuses the first item, arrow keys move between items, Escape or Tab closes it, and choosing an item returns focus to the line's button. The menu opens below the line and right of the number column, so the line and the numbers below it stay visible. The selected range is stated under the form and shaded in the log; a reversed range is explained ("The first line (X) is after the last line (Y)… they are not swapped") and Add to report is disabled. Step-boundary, size and long-line rules are unchanged. Boundaries are discarded with the job's log panel, so they never carry into another job, attempt or run.
 
+### 11.14 Implementation notes: containerized hosting and the Helm chart (K1–K3, for review)
+
+- **Static server** (`deploy/ui/server.mjs`):
+  - It reads the build into memory at startup, and answers only requests whose path, exactly as sent, names one of those files. Nothing is decoded or resolved against the filesystem, so traversal has nothing to act on.
+  - GET and HEAD only; other methods get 405.
+  - `/healthz` answers at the root whatever the prefix.
+  - Unknown paths return 404, with no fallback page (routes are in the hash).
+  - `index.html` is `no-cache`; hashed assets are `immutable`.
+  - It stops on SIGTERM within 10 s.
+  - Configuration: `PORT` (8080) and `GHA_UI_BASE_PATH` (`/`). An invalid prefix stops startup.
+- **Image** (`deploy/ui/Dockerfile`):
+  - The build stage runs `npm ci --ignore-scripts` and `npm run build`, and refuses to finish if `dist/` contains the fixture API path.
+  - The runtime stage, `node:22.23.4-alpine3.24`, has npm, npx, corepack and yarn removed. It holds only the build, the server and the header file, owned by root, and runs `node` directly as UID 1000.
+  - The build context is an allowlist (`.dockerignore`), so private notes and fixtures never enter it.
+  - No image is published.
+- **Relative base (A12).**
+  - Vite emits `./assets/...` in `index.html`, and creates the worker with ``new URL(`log-worker-….js`, import.meta.url)``, so it resolves next to the main chunk.
+  - The dev server keeps `/`.
+  - The only root-absolute path in the app is the fixture API, which production builds do not contain.
+- **Chart** (`charts/gha-ui`):
+  - Defaults name the locally built image (`localhost/gha-ui:k1`, `IfNotPresent`); other clusters set a registry, tag or digest.
+  - `values.schema.json` rejects:
+    - weakened security contexts: non-root, privilege escalation, a writable root filesystem, privileged mode, capabilities, a seccomp profile of `Unconfined`, missing from both levels, or malformed (`Localhost` needs a relative `localhostProfile`, and `RuntimeDefault` takes none), and container `securityContext` keys the chart does not list (such as `procMount`);
+    - a mounted service-account token;
+    - an invalid `basePath`, checked with the server's own rule;
+    - `latest` tags;
+    - ports below 1024;
+    - unknown keys.
+  - The UID may be changed or left to the platform.
+  - The `helm test` pod (pinned `curlimages/curl:8.9.1`) checks the release through its Service, including the base path:
+    - `/healthz`;
+    - the page's CSP directives and security headers;
+    - the script and log worker, with their caching and the worker CSP;
+    - 404s for unknown and fixture paths.
+  - A passing test pod is deleted; a failing one is kept for its logs.
+- **Verification (2026-10-28):**
+  - Unit tests cover the server's request policy and the build's relative URLs.
+  - A Playwright spec runs the production build through the real server, at the root and under `/gha-ui/`:
+    - live mode against a mocked API;
+    - the log worker loaded and searched;
+    - headers checked exactly;
+    - and a control showing a stale worker CSP is caught.
+  - The same spec and `check-http.ts` passed:
+    - against the Podman container, run read-only with all capabilities dropped and no network;
+    - and through `kubectl port-forward` on Minikube (Podman driver, CRI-O, Kubernetes 1.35), in a namespace that enforces Pod Security "restricted".
+  - `helm test` passed for both layouts, and a deliberately wrong configuration failed it.
+  - *Integration review (K4, 2026-10-28):* the documented path was repeated from an export of the working tree (`.gitignore` applied) in a scratch folder:
+    - `npm ci`, lint, typecheck, unit tests (with fetched fixtures), the build and Playwright;
+    - an image build with no cache;
+    - `helm lint` and the invariant checker;
+    - a load into Minikube;
+    - install into a new "restricted" namespace at both paths, `helm test`, the HTTP checks and the browser spec through the Services;
+    - upgrade, rollback and uninstall.
+  - Fixes from the review:
+    - `helm test --logs` always exits 1, because a passing test pod is deleted before Helm reads its logs, so the README no longer uses it;
+    - the README notes that commands use the current kube context;
+    - `check-http.ts` validates its base-path argument.
+  - *Pre-commit audit (K5–K6, 2026-10-28):* the schema accepted three weakening overrides: removing seccomp from both levels, mounting the service-account token, and unknown container `securityContext` keys such as `procMount: Unmasked`. It now rejects them, and the checker tests every rejection. *K7:* malformed `Localhost` and `RuntimeDefault` profiles are also rejected, and the checker accepts a valid `Localhost` profile, as the schema does.
+- **CI** (`.github/workflows/ci.yml`, job "Helm chart"): `helm lint --strict` and `helm template` at the root and under `/gha-ui/`, then `tools/chart/check-chart.ts`.
+  - The checker verifies, on rendered templates:
+    - no RBAC or unexpected resources;
+    - one container, with no backend environment;
+    - no service-account token;
+    - non-root, a read-only filesystem, all capabilities dropped, no privilege escalation, seccomp `RuntimeDefault` or a valid `Localhost` profile, no host namespaces or volumes;
+    - `/healthz` probes on the named port;
+    - the Service selector and named target port;
+    - the base-path environment;
+    - a hardened test pod.
+  - It also confirms:
+    - that the values schema refuses each unsafe override;
+    - that supported overrides still render (registry image, digest, pull secret, port, replicas, NodePort, base paths, a platform-assigned UID, seccomp on one level only, a `Localhost` seccomp profile);
+    - that each check catches a deliberately broken copy of the rendered default.
+- **Not covered yet:**
+  - Docker Engine and arm64 builds;
+  - kind, AKS, EKS and GKE;
+  - image signing and SBOM, and base-image digests;
+  - external access (Gateway API or Ingress), NetworkPolicy, PodDisruptionBudget and autoscaling.
+
 ## 12. Open risks (not validated)
 
 | Risk | Current state | Mitigation or plan |
@@ -766,6 +875,8 @@ A pure model (`src/domain/report/report.ts`) that builds a shareable report of o
 | **Timings** | One machine (2-core i7-7500U) and one network (~8.3 MB/s) | Phase 5 measurement |
 | **Extraction generalisation** | Held-out top-3 58–69% on inspected sets | Regression corpus; Q10 protocol for fresh held-out sets |
 | **Request accounting** | Whether HEAD and redirect requests count against the rate limit was not measured | Track via rate-limit headers in development |
+| **Headers through a proxy** | The server's headers are verified directly and through `kubectl port-forward` only | Re-run `deploy/ui/check-http.ts` through any Gateway, Ingress or CDN before relying on it (§7.4) |
+| **Hosting coverage** | Minikube (Podman, CRI-O, amd64) only; base images pinned by tag, not digest; no image signing | Test other clusters and architectures; pin digests once verified for every platform built |
 
 ## 13. Open questions
 

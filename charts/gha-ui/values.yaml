@@ -1,0 +1,110 @@
+# Values for the GitHub Actions UI (charts/gha-ui/README.md). The pod serves static files only: the browser calls
+# api.github.com itself, so the pod needs no Kubernetes API access, no outbound network and no writable filesystem.
+
+# The image built from deploy/ui/Dockerfile. The defaults name the locally built image used with Minikube (README);
+# set your registry's repository and an immutable tag, or a digest, for any shared cluster.
+image:
+  repository: localhost/gha-ui
+  tag: k1
+  # When set (sha256:...), the image is pulled by digest and the tag is ignored.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Names of existing Secrets of type kubernetes.io/dockerconfigjson, for private registries.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# Path prefix the UI is served under, e.g. "/gha-ui/" (must start and end with "/"). Empty serves from "/".
+# Only for a proxy that forwards the prefix unchanged; a proxy that strips it needs the default.
+basePath: ""
+
+# The port the server listens on inside the pod (the image's default is 8080).
+containerPort: 8080
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+serviceAccount:
+  # A dedicated ServiceAccount with no permissions; no Role or RoleBinding is created.
+  create: true
+  name: ""
+  annotations: {}
+  # The UI never calls the Kubernetes API.
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+# UID and GID 1000 are the image's "node" user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  privileged: false
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+# Measured on Minikube: about 14 MiB of memory once started; CPU only while serving (charts/gha-ui/README.md).
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+# All probes use GET /healthz, which answers at the root whatever basePath is and never contacts GitHub.
+startupProbe:
+  enabled: true
+  periodSeconds: 2
+  timeoutSeconds: 2
+  failureThreshold: 15
+livenessProbe:
+  enabled: true
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+readinessProbe:
+  enabled: true
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 2
+
+# The server stops within 10 seconds of SIGTERM.
+terminationGracePeriodSeconds: 15
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# `helm test`: a pod that checks the UI through its Service (templates/tests/test-health.yaml).
+tests:
+  image:
+    repository: docker.io/curlimages/curl
+    tag: 8.9.1
+    pullPolicy: IfNotPresent
+  # The curl image's own unprivileged user.
+  runAsUser: 100

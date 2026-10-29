@@ -1,4 +1,5 @@
-// Content Security Policy for the production build served by `vite preview` (docs/ARCHITECTURE.md §7.3).
+// Content Security Policy for the production build served by `vite preview` (docs/ARCHITECTURE.md §7.3), and the
+// single source of the headers the production container serves (deploy/ui/write-security-headers.ts).
 // The dev server is not covered: its hot-reload client needs inline scripts and a websocket.
 import type { Plugin } from "vite";
 
@@ -23,6 +24,9 @@ export const APP_CSP = [
 /** The log worker holds log text and must never make network requests. */
 export const WORKER_CSP = "default-src 'none'; script-src 'self'; connect-src 'none'";
 
+/** Sent with every response, alongside the CSP. */
+export const COMMON_HEADERS = { "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" } as const;
+
 export const isWorkerScript = (path: string) => /^\/assets\/log-worker-[\w-]+\.js$/.test(path);
 
 export function securityHeaders(): Plugin {
@@ -32,8 +36,7 @@ export function securityHeaders(): Plugin {
       server.middlewares.use((req, res, next) => {
         const path = (req.url ?? "/").split("?")[0]!;
         res.setHeader("Content-Security-Policy", isWorkerScript(path) ? WORKER_CSP : APP_CSP);
-        res.setHeader("Referrer-Policy", "no-referrer");
-        res.setHeader("X-Content-Type-Options", "nosniff");
+        for (const [name, value] of Object.entries(COMMON_HEADERS)) res.setHeader(name, value);
         next();
       });
     },

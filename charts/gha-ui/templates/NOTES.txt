@@ -1,0 +1,18 @@
+GitHub Actions UI ({{ include "gha-ui.image" . }}) is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Wait for it:
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "gha-ui.fullname" . }}
+
+Open it locally:
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "gha-ui.fullname" . }} 8080:{{ .Values.service.port }}
+  then browse to http://127.0.0.1:8080{{ include "gha-ui.basePath" . }}
+
+Check it:
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+The page runs in the browser and calls https://api.github.com directly with a token the user enters; the token is
+held in that tab's memory only and never reaches this pod. Serve it over HTTPS outside local port-forwarding.
+{{- if .Values.basePath }}
+
+Served under {{ .Values.basePath }}: a proxy in front must forward that prefix unchanged.
+{{- end }}

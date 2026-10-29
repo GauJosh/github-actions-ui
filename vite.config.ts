@@ -15,6 +15,9 @@ export default defineConfig(({ command, isPreview }) => {
   // Ordinary production builds and ordinary `vite preview` have no fixture code and no fixture routes.
   const fixtures = (command === "serve" && !isPreview) || testBuild;
   return {
+    // Builds reference their assets and the log worker relative to the page and the main chunk, so one build serves
+    // from a host's root or under any path prefix (deploy/ui/server.mjs). Routes live in the URL hash.
+    base: command === "build" ? "./" : "/",
     plugins: [react(), securityHeaders(), ...(fixtures ? [fixtureServer(root)] : [])],
     define: { __FIXTURE_MODE__: JSON.stringify(fixtures) },
     // A fixture-enabled build goes to its own folder so it cannot be mistaken for a production build.

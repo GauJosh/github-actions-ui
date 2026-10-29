@@ -61,6 +61,37 @@ jobs:
           path: dist/
           retention-days: 7
 
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The version the chart was developed and tested with (charts/gha-ui/README.md), checksum from get.helm.sh
+      # and the release notes. Rendering only: no cluster, registry, image or credentials.
+      HELM_VERSION: v3.13.3
+      HELM_SHA256: bbb6e7c6201458b235f335280f35493950dcd856825ddcfd1d3b40ae757d5c7d
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Helm
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/helm"
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP/helm" --strip-components=1 linux-amd64/helm
+          echo "$RUNNER_TEMP/helm" >> "$GITHUB_PATH"
+      - run: helm version
+      - run: helm lint --strict charts/gha-ui
+      - run: helm lint --strict charts/gha-ui --set basePath=/gha-ui/
+      - run: helm template gha-ui charts/gha-ui > /dev/null
+      - run: helm template gha-ui charts/gha-ui --set basePath=/gha-ui/ > /dev/null
+      # Security and wiring invariants of the rendered chart, with a self-test of each check.
+      - run: node --disable-warning=ExperimentalWarning tools/chart/check-chart.ts
+
   validate:
     name: Validate workflows and dependencies
     runs-on: ubuntu-latest
