@@ -1,0 +1,104 @@
+# `helm test`: checks the UI through its Service. Exact header values are checked against their source when the
+# image is built (deploy/ui/check-http.ts); this checks the deployed release has the essentials.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "gha-ui.fullname" . }}-test-health
+  # Not the selector labels: the Service must never route to this pod.
+  labels:
+    helm.sh/chart: {{ include "gha-ui.chart" . }}
+    app.kubernetes.io/name: {{ include "gha-ui.name" . }}-test
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: test
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    helm.sh/hook: test
+    # A passing test pod is removed; a failing one stays for `kubectl logs` until the next run.
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: {{ .Values.tests.runAsUser }}
+    runAsGroup: {{ .Values.tests.runAsUser }}
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: check
+      image: "{{ .Values.tests.image.repository }}:{{ .Values.tests.image.tag }}"
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+      env:
+        - name: ORIGIN
+          value: "http://{{ include "gha-ui.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}"
+        - name: BASE
+          value: {{ include "gha-ui.basePath" . | quote }}
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -u
+          failures=0
+          fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
+          pass() { echo "ok: $*"; }
+          # Response headers of a GET, one per line, without carriage returns; the status line first.
+          get() { curl -sS --max-time 10 -o /dev/null -D - "$ORIGIN$1" | tr -d '\r'; }
+          body() { curl -sS --max-time 10 "$ORIGIN$1"; }
+          status() { printf '%s\n' "$1" | head -n 1 | cut -d ' ' -f 2; }
+          # The value of one header, and how many times it was sent.
+          header() { printf '%s\n' "$1" | grep -i "^$2: " | sed "s/^[^:]*: //"; }
+          count() { printf '%s\n' "$1" | grep -ci "^$2: "; }
+
+          echo "Checking $ORIGIN (base path $BASE)"
+          h=$(get /healthz) || { fail "no response from $ORIGIN/healthz"; exit 1; }
+          [ "$(status "$h")" = 200 ] && pass "/healthz 200" || fail "/healthz: HTTP $(status "$h")"
+
+          h=$(get "$BASE")
+          [ "$(status "$h")" = 200 ] && pass "$BASE 200" || fail "$BASE: HTTP $(status "$h")"
+          [ "$(count "$h" content-security-policy)" = 1 ] && pass "one CSP header" || fail "$BASE: CSP header sent $(count "$h" content-security-policy) times"
+          csp=$(header "$h" content-security-policy)
+          for d in "default-src 'self'" "script-src 'self'" "connect-src 'self' https://api.github.com" "object-src 'none'" "base-uri 'none'" "frame-ancestors 'none'"; do
+            case "; $csp;" in *"; $d;"* | *"; $d "*) pass "CSP has $d" ;; *) fail "CSP lacks \"$d\": $csp" ;; esac
+          done
+          case "$csp" in *unsafe-*) fail "CSP allows unsafe sources: $csp" ;; esac
+          [ "$(header "$h" x-content-type-options)" = nosniff ] && pass "nosniff" || fail "X-Content-Type-Options: $(header "$h" x-content-type-options)"
+          [ "$(header "$h" referrer-policy)" = no-referrer ] && pass "no-referrer" || fail "Referrer-Policy: $(header "$h" referrer-policy)"
+          [ "$(header "$h" cache-control)" = no-cache ] && pass "page is no-cache" || fail "page Cache-Control: $(header "$h" cache-control)"
+
+          # The page's script, relative to the page, and the log worker it names, with the worker CSP.
+          script=$(body "$BASE" | grep -o 'src="\./assets/[^"]*\.js"' | head -n 1 | sed 's/^src="\.\///; s/"$//')
+          if [ -z "$script" ]; then
+            fail "no relative script reference in the page"
+          else
+            h=$(get "$BASE$script")
+            [ "$(status "$h")" = 200 ] && pass "$script 200" || fail "$script: HTTP $(status "$h")"
+            [ "$(header "$h" cache-control)" = "public, max-age=31536000, immutable" ] && pass "$script immutable" || fail "$script Cache-Control: $(header "$h" cache-control)"
+            worker=$(body "$BASE$script" | grep -o 'log-worker-[A-Za-z0-9_-]*\.js' | head -n 1)
+            if [ -z "$worker" ]; then
+              fail "the main script names no log worker"
+            else
+              h=$(get "${BASE}assets/$worker")
+              [ "$(status "$h")" = 200 ] && pass "$worker 200" || fail "$worker: HTTP $(status "$h")"
+              case "$(header "$h" content-security-policy)" in *"connect-src 'none'"*) pass "worker CSP has connect-src 'none'" ;; *) fail "worker CSP: $(header "$h" content-security-policy)" ;; esac
+            fi
+          fi
+
+          for p in "${BASE}no-such-page" "${BASE}__fixtures/api/repos/acme/app/actions/runs/1"; do
+            h=$(get "$p")
+            [ "$(status "$h")" = 404 ] && pass "$p 404" || fail "$p: HTTP $(status "$h"), expected 404"
+          done
+
+          if [ "$failures" -gt 0 ]; then echo "$failures check(s) failed"; exit 1; fi
+          echo "All checks passed"

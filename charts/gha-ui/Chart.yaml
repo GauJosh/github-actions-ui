@@ -1,0 +1,14 @@
+apiVersion: v2
+name: gha-ui
+description: GitHub Actions UI, a read-only browser app for understanding and troubleshooting GitHub Actions runs (static frontend only).
+type: application
+version: 0.1.0
+# The application has no release versions yet; the image tag is set in values.yaml (image.tag).
+appVersion: "0.0.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/GauJosh/github-actions-ui
+sources:
+  - https://github.com/GauJosh/github-actions-ui
+keywords:
+  - github-actions
+  - ci

@@ -1,0 +1,176 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "gha-ui values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "replicaCount", "containerPort", "service", "serviceAccount", "podSecurityContext", "securityContext", "tests"],
+  "anyOf": [
+    { "description": "A seccomp profile on the pod or the container: removing both is refused.", "properties": { "podSecurityContext": { "required": ["seccompProfile"] } } },
+    { "properties": { "securityContext": { "required": ["seccompProfile"] } } }
+  ],
+  "definitions": {
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 },
+        "successThreshold": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "seccompProfile": {
+      "description": "RuntimeDefault, or Localhost with a profile path relative to the kubelet's seccomp directory (as Kubernetes requires); Unconfined is refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["RuntimeDefault", "Localhost"] },
+        "localhostProfile": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$", "not": { "pattern": "(^|/)\\.\\.(/|$)" } }
+      },
+      "oneOf": [
+        { "properties": { "type": { "const": "RuntimeDefault" } }, "not": { "required": ["localhostProfile"] } },
+        { "properties": { "type": { "const": "Localhost" } }, "required": ["localhostProfile"] }
+      ]
+    },
+    "id": { "type": ["integer", "null"], "minimum": 1 },
+    "quantity": { "type": ["string", "number"] },
+    "resourceList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "cpu": { "$ref": "#/definitions/quantity" }, "memory": { "$ref": "#/definitions/quantity" } }
+    }
+  },
+  "properties": {
+    "global": { "type": "object" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9][a-z0-9._/:-]*$" },
+        "tag": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", "not": { "const": "latest" } },
+        "digest": { "type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$" },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          { "type": "string", "minLength": 1 },
+          { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } }
+        ]
+      }
+    },
+    "nameOverride": { "type": "string", "maxLength": 63 },
+    "fullnameOverride": { "type": "string", "maxLength": 63 },
+    "replicaCount": { "type": "integer", "minimum": 0 },
+    "updateStrategy": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["RollingUpdate", "Recreate"] },
+        "rollingUpdate": { "type": "object" }
+      }
+    },
+    "basePath": {
+      "description": "Same rule as deploy/ui/server.mjs: empty, \"/\", or a prefix such as \"/gha-ui/\".",
+      "type": "string",
+      "pattern": "^(|/|/([A-Za-z0-9_~-][A-Za-z0-9_.~-]*/)+)$"
+    },
+    "containerPort": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "port"],
+      "properties": {
+        "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "nodePort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "automountServiceAccountToken"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+        "automountServiceAccountToken": { "description": "The UI never calls the Kubernetes API, so no token is mounted.", "const": false }
+      }
+    },
+    "podAnnotations": { "type": "object", "additionalProperties": { "type": "string" } },
+    "podLabels": { "type": "object", "additionalProperties": { "type": "string" } },
+    "podSecurityContext": {
+      "description": "Non-root is required; the UID may be changed or left to the platform (null), e.g. on OpenShift.",
+      "type": "object",
+      "required": ["runAsNonRoot"],
+      "properties": {
+        "runAsNonRoot": { "const": true },
+        "runAsUser": { "$ref": "#/definitions/id" },
+        "runAsGroup": { "$ref": "#/definitions/id" },
+        "fsGroup": { "$ref": "#/definitions/id" },
+        "seccompProfile": { "$ref": "#/definitions/seccompProfile" }
+      }
+    },
+    "securityContext": {
+      "description": "The hardening the image was tested with (deploy/ui/README.md) cannot be relaxed through values. Only these keys are accepted: procMount, seLinuxOptions, windowsOptions, appArmorProfile and the like are refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runAsNonRoot", "allowPrivilegeEscalation", "readOnlyRootFilesystem", "capabilities"],
+      "properties": {
+        "runAsNonRoot": { "const": true },
+        "runAsUser": { "$ref": "#/definitions/id" },
+        "runAsGroup": { "$ref": "#/definitions/id" },
+        "privileged": { "const": false },
+        "allowPrivilegeEscalation": { "const": false },
+        "readOnlyRootFilesystem": { "const": true },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["drop"],
+          "properties": {
+            "drop": { "type": "array", "contains": { "const": "ALL" } },
+            "add": { "type": "array", "maxItems": 0 }
+          }
+        },
+        "seccompProfile": { "$ref": "#/definitions/seccompProfile" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "requests": { "$ref": "#/definitions/resourceList" }, "limits": { "$ref": "#/definitions/resourceList" } }
+    },
+    "startupProbe": { "$ref": "#/definitions/probe" },
+    "livenessProbe": { "$ref": "#/definitions/probe" },
+    "readinessProbe": { "$ref": "#/definitions/probe" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "nodeSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag", "pullPolicy"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1, "not": { "const": "latest" } },
+            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "runAsUser": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

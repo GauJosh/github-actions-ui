@@ -16,7 +16,7 @@ export default tseslint.config(
     rules: reactHooks.configs.recommended.rules,
   },
   {
-    files: ["*.config.{js,ts}", "tools/**/*.{js,ts}", "tests/**/*.ts"],
+    files: ["*.config.{js,ts}", "tools/**/*.{js,ts}", "tests/**/*.ts", "deploy/**/*.{mjs,ts}"],
     languageOptions: { globals: globals.node },
   },
   // Module boundaries (docs/ARCHITECTURE.md §4).
