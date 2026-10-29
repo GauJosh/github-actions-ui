@@ -6,6 +6,21 @@ const edges = (page: Page) =>
   page.getByTestId("graph-edge").evaluateAll((els) => els.map((e) => `${e.getAttribute("data-from")}->${e.getAttribute("data-to")}`).sort());
 const node = (page: Page, key: string) => page.locator(`[data-testid="graph-node"][data-node-key="${key}"]`);
 
+// The large graph opens at 80% centred on its failure, inside the graph viewport. Where that viewport sits on the page
+// depends on the run header and tabs above it, which wrap with wider fonts, so it is brought into view first and the
+// failure is then checked against the viewport, not against the window's fold.
+async function expectOpenOnFailure(page: Page) {
+  await expect(page.locator(".zoom-level")).toHaveText("80%");
+  const viewport = page.getByTestId("graph-viewport");
+  await viewport.scrollIntoViewIfNeeded();
+  const failure = node(page, "def:s6-j3");
+  await expect(failure).toBeInViewport({ ratio: 1 });
+  const v = (await viewport.boundingBox())!;
+  const f = (await failure.boundingBox())!;
+  expect(Math.abs(f.x + f.width / 2 - (v.x + v.width / 2))).toBeLessThan(2);
+  expect(Math.abs(f.y + f.height / 2 - (v.y + v.height / 2))).toBeLessThan(2);
+}
+
 test("real run s05: edges exactly as declared in the workflow file at the run's commit; failed job to its log", async ({ page }) => {
   const github = await forbidGitHub(page);
   await page.goto("/?mode=fixtures#/runs/GauJosh/gha-ui-fixtures/39366120652");
@@ -95,8 +110,7 @@ test("large graph: opens readable on the failure, zooms, fits, pans, and is keyb
   await page.goto("/?mode=fixtures#/runs/fixtures/synthetic/990000105");
   await expect(page.getByTestId("graph-node")).toHaveCount(108);
   const zoom = page.locator(".zoom-level");
-  await expect(zoom).toHaveText("80%");
-  await expect(node(page, "def:s6-j3")).toBeInViewport();
+  await expectOpenOnFailure(page);
   await expect(page.locator(".minimap")).toBeVisible();
 
   await page.getByRole("button", { name: "Fit" }).click();
@@ -121,6 +135,14 @@ test("large graph: opens readable on the failure, zooms, fits, pans, and is keyb
   await page.keyboard.press("Tab");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("job-details")).toBeVisible();
+});
+
+test("large graph in a short window: the failure stays centred in the graph, whatever sits above it", async ({ page }) => {
+  // At this height the graph starts below the fold on every platform, as it does at 1280×720 with DejaVu Sans on Linux.
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await page.goto("/?mode=fixtures#/runs/fixtures/synthetic/990000105");
+  await expect(page.getByTestId("graph-node")).toHaveCount(108);
+  await expectOpenOnFailure(page);
 });
 
 test("the run's identity is kept in the URL across graph, job and log, and the breadcrumb leads back", async ({ page }) => {
