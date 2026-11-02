@@ -1,0 +1,24 @@
+{{- /*
+Secret bindings (security review C1), validated here and read by the executor (deploy/emergency/executor/bindings.ts,
+which validates them again and fails closed).
+*/ -}}
+{{- $operator := include "gha-emergency.tokenSecret" . }}
+{{- range $i, $b := .Values.secretBindings }}
+{{- $where := printf "secretBindings[%d]" $i }}
+{{- if not $b.name }}{{ fail (printf "%s: name is required" $where) }}{{ end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (toString $b.secret)) }}{{ fail (printf "%s: secret must be a Kubernetes object name" $where) }}{{ end }}
+{{- if eq $b.secret $operator }}{{ fail (printf "%s: the break-glass credentials Secret %s can never be bound" $where $operator) }}{{ end }}
+{{- if and $.Values.auth.oidc.clientSecret.existingSecret (eq $b.secret $.Values.auth.oidc.clientSecret.existingSecret) }}{{ fail (printf "%s: the identity provider's client secret can never be bound" $where) }}{{ end }}
+{{- if not $b.keys }}{{ fail (printf "%s: keys must list the secret names it may provide" $where) }}{{ end }}
+{{- range $b.keys }}{{ if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" (toString .)) }}{{ fail (printf "%s: invalid key %v" $where .) }}{{ end }}{{ end }}
+{{- if not $b.snapshots }}{{ fail (printf "%s: snapshots must list the snapshot digests it serves" $where) }}{{ end }}
+{{- range $b.snapshots }}{{ if not (regexMatch "^[0-9a-f]{64}$" (toString .)) }}{{ fail (printf "%s: %v is not a snapshot digest" $where .) }}{{ end }}{{ end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-bindings
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+data:
+  bindings.json: {{ toJson (default (list) .Values.secretBindings) | quote }}

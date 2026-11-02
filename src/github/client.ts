@@ -184,6 +184,46 @@ export function createGitHubClient(options: { apiBase: string; transport: Transp
       return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
     },
 
+    /** The commit a branch, tag or SHA names (`GET …/commits/{ref}`). Used to pin emergency snapshots. */
+    async resolveCommit(ref: RepoRef, gitRef: string): Promise<string> {
+      const { body } = await getJson<{ sha?: unknown }>(`${repoPath(ref)}/commits/${encodeURIComponent(gitRef)}`);
+      if (typeof body.sha !== "string" || !/^[0-9a-f]{40}$/.test(body.sha)) throw new GitHubError({ kind: "http-error", status: 422 });
+      return body.sha;
+    },
+
+    /**
+     * Every regular file at a commit (`GET …/git/trees/{sha}?recursive=1`): path, size, blob SHA and whether git marks
+     * it executable, plus the tree's own SHA and how many entries were left out (symlinks, submodules). A truncated
+     * listing is refused rather than used partially.
+     */
+    async getTree(ref: RepoRef, sha: string): Promise<{ treeSha: string; skipped: number; files: { path: string; size: number; sha: string; executable: boolean }[] }> {
+      const { body } = await getJson<{ sha?: string; truncated?: boolean; tree?: { path: string; mode: string; type: string; size?: number; sha: string }[] }>(
+        `${repoPath(ref)}/git/trees/${encodeURIComponent(sha)}?recursive=1`,
+      );
+      if (body.truncated || !Array.isArray(body.tree) || typeof body.sha !== "string") throw new GitHubError({ kind: "http-error", status: 413 });
+      const regular = (e: { type: string; mode: string }) => e.type === "blob" && (e.mode === "100644" || e.mode === "100755");
+      return {
+        treeSha: body.sha,
+        skipped: body.tree.filter((e) => e.type !== "tree" && !regular(e)).length,
+        files: body.tree.filter(regular).map((e) => ({ path: e.path, size: e.size ?? 0, sha: e.sha, executable: e.mode === "100755" })),
+      };
+    },
+
+    /** The tree a commit points to (`GET …/git/commits/{sha}`): used to check a snapshot's provenance (H1). */
+    async getCommitTree(ref: RepoRef, sha: string): Promise<string> {
+      const { body } = await getJson<{ sha?: string; tree?: { sha?: unknown } }>(`${repoPath(ref)}/git/commits/${encodeURIComponent(sha)}`);
+      if (body.sha !== sha || typeof body.tree?.sha !== "string") throw new GitHubError({ kind: "http-error", status: 422 });
+      return body.tree.sha;
+    },
+
+    /** One file's bytes by blob SHA (`GET …/git/blobs/{sha}`, base64). */
+    async getBlob(ref: RepoRef, blobSha: string): Promise<Uint8Array> {
+      const { body } = await getJson<{ encoding?: string; content?: string }>(`${repoPath(ref)}/git/blobs/${encodeURIComponent(blobSha)}`);
+      if (body.encoding !== "base64" || typeof body.content !== "string") throw new GitHubError({ kind: "http-error", status: 422 });
+      const binary = atob(body.content.replace(/\s/g, ""));
+      return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    },
+
     /** The run (its latest attempt), or one attempt of it (`GET …/runs/{id}/attempts/{n}`). */
     async getRun(ref: RunRef, attempt?: number): Promise<Run> {
       return (await getJson<Run>(`${repoPath(ref)}/actions/runs/${ref.runId}${attempt ? `/attempts/${attempt}` : ""}`)).body;

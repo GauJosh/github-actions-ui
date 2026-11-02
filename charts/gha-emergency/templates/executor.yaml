@@ -1,0 +1,175 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-executor
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+    {{- include "gha-emergency.executorSelector" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One writer for the ReadWriteOnce snapshot volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gha-emergency.executorSelector" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        gha-emergency.github-actions-ui/auth-config: {{ include (print $.Template.BasePath "/auth.yaml") . | sha256sum | trunc 16 }}
+      labels:
+        {{- include "gha-emergency.labels" . | nindent 8 }}
+        {{- include "gha-emergency.executorSelector" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gha-emergency.fullname" . }}-executor
+      # The executor calls the Kubernetes API (Jobs, pods, logs) with this token.
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: "{{ .Values.executor.image.repository }}:{{ .Values.executor.image.tag }}"
+          imagePullPolicy: {{ .Values.executor.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: PORT
+              value: "8080"
+            {{- with .Values.basePath }}
+            - name: GHA_UI_BASE_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GHA_EMERGENCY_DATA_DIR
+              value: /data
+            # Security review H2: sign-in, sessions and approval (auth.yaml).
+            - name: GHA_EMERGENCY_AUTH_FILE
+              value: /etc/gha-emergency-auth/auth.json
+            - name: GHA_EMERGENCY_RUNNER_IMAGE
+              value: {{ include "gha-emergency.runnerImage" . | quote }}
+            # Security review H4: the policy whose enforcement the executor proves before running anything.
+            - name: GHA_EMERGENCY_ADMISSION_POLICY
+              value: {{ include "gha-emergency.admissionPolicy" . | quote }}
+            - name: GHA_EMERGENCY_PVC
+              value: {{ include "gha-emergency.fullname" . }}-data
+            - name: GHA_EMERGENCY_RUNNER_SERVICE_ACCOUNT
+              value: {{ include "gha-emergency.fullname" . }}-runner
+            - name: GHA_EMERGENCY_EXECUTOR_POD_LABELS
+              value: {{ include "gha-emergency.executorSelector" . | fromYaml | toJson | quote }}
+            - name: GHA_EMERGENCY_RUNNER_CPU
+              value: {{ .Values.runner.resources.cpu | quote }}
+            - name: GHA_EMERGENCY_RUNNER_MEMORY
+              value: {{ .Values.runner.resources.memory | quote }}
+            - name: GHA_EMERGENCY_RUNNER_SCRATCH
+              value: {{ .Values.runner.resources.scratch | quote }}
+            - name: GHA_EMERGENCY_MAX_MINUTES
+              value: {{ .Values.runner.maxMinutes | quote }}
+            - name: GHA_EMERGENCY_MAX_CONCURRENT
+              value: {{ .Values.runner.maxConcurrent | quote }}
+            - name: GHA_EMERGENCY_JOB_TTL_SECONDS
+              value: {{ .Values.runner.ttlSecondsAfterFinished | quote }}
+            # Security review C1: bindings, and the one Secret that can never be bound.
+            - name: GHA_EMERGENCY_BINDINGS_FILE
+              value: /etc/gha-emergency-bindings/bindings.json
+            - name: GHA_EMERGENCY_OPERATOR_SECRET
+              value: {{ include "gha-emergency.tokenSecret" . }}
+            # Security review C2: the network canary and egress mode.
+            - name: GHA_EMERGENCY_ALLOW_EGRESS
+              value: {{ .Values.network.allowEgressMode | quote }}
+            - name: GHA_EMERGENCY_SERVICE
+              value: "{{ include "gha-emergency.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}"
+            - name: GHA_EMERGENCY_CANARY_EXTERNAL
+              value: {{ .Values.network.canary.externalTarget | quote }}
+            - name: GHA_EMERGENCY_CANARY_METADATA
+              value: {{ .Values.network.canary.metadataTarget | quote }}
+            - name: GHA_EMERGENCY_NETWORK_CHECK_MAX_AGE_SECONDS
+              value: {{ .Values.network.canary.maxAgeSeconds | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.executor.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: operator-token
+              mountPath: /etc/gha-emergency
+              readOnly: true
+            - name: bindings
+              mountPath: /etc/gha-emergency-bindings
+              readOnly: true
+            - name: auth
+              mountPath: /etc/gha-emergency-auth
+              readOnly: true
+            {{- if .Values.auth.oidc.clientSecret.existingSecret }}
+            - name: oidc-client
+              mountPath: /etc/gha-emergency-oidc
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "gha-emergency.fullname" . }}-data
+        - name: operator-token
+          secret:
+            secretName: {{ include "gha-emergency.tokenSecret" . }}
+            defaultMode: 0440
+        - name: bindings
+          configMap:
+            name: {{ include "gha-emergency.fullname" . }}-bindings
+        - name: auth
+          configMap:
+            name: {{ include "gha-emergency.fullname" . }}-auth
+        {{- with .Values.auth.oidc.clientSecret }}
+        {{- if .existingSecret }}
+        - name: oidc-client
+          secret:
+            secretName: {{ .existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .key }}
+                path: {{ .key }}
+        {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gha-emergency.executorSelector" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

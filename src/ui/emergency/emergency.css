@@ -1,0 +1,301 @@
+/* Emergency execution views. Theme tokens from theme.css. */
+.emergency {
+  display: grid;
+  gap: 16px;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+.emergency-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  border-left: 4px solid var(--fail);
+  padding-left: 12px;
+}
+.emergency-head h2 {
+  margin: 2px 0 6px;
+}
+.emergency-head h2 a {
+  color: inherit;
+  text-decoration: none;
+}
+.emergency-kicker {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fail);
+}
+.emergency .panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.emergency .panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.emergency h3 {
+  margin: 0 0 10px;
+}
+.emergency h4 {
+  margin: 18px 0 6px;
+}
+.emergency label {
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+}
+.emergency label.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.emergency input:not([type="checkbox"]):not([type="radio"]),
+.emergency select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  min-width: 0;
+}
+.emergency fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+}
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.form-row label {
+  flex: 1 1 200px;
+}
+.form-row label.wide {
+  flex-basis: 100%;
+}
+.emergency-connect,
+.execute-form {
+  display: grid;
+  gap: 12px;
+  max-width: 640px;
+}
+.emergency button.primary,
+.button-link {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.emergency button.danger {
+  background: var(--fail);
+  color: #fff;
+}
+.emergency-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.emergency-table th,
+.emergency-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.tag {
+  display: inline-block;
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+}
+.tag-ok {
+  color: var(--pass);
+  border-color: var(--pass);
+}
+.tag-bad {
+  color: var(--fail);
+  border-color: var(--fail);
+}
+.tag-run {
+  color: var(--run);
+  border-color: var(--run);
+}
+.warn-text {
+  color: var(--warn);
+}
+.manifest-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+.manifest-facts dt {
+  color: var(--muted);
+}
+.manifest-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.diag {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.diag-error li {
+  color: var(--fail);
+}
+.diag-warning li {
+  color: var(--warn);
+}
+.graph-jobs,
+.graph-steps,
+.exec-steps {
+  margin: 4px 0 8px;
+  padding-left: 22px;
+}
+.kind {
+  display: inline-block;
+  font-size: 11px;
+  font-family: var(--mono, ui-monospace, monospace);
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.kind-checkout {
+  color: var(--muted);
+}
+.requirements {
+  padding-left: 20px;
+}
+.file-list {
+  font-size: 12px;
+  max-height: 260px;
+  overflow: auto;
+}
+.exec-job {
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+}
+.exec-job-head {
+  margin: 0 0 4px;
+}
+.exec-outputs {
+  margin: 0 0 4px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.exec-step {
+  margin: 4px 0;
+}
+.exec-log {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Each log line carries its source in a gutter the workflow's text can't fill (security review H3). */
+.log-src {
+  display: inline-block;
+  width: 7ch;
+  margin-right: 1ch;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+  user-select: none;
+}
+.log-runner {
+  font-style: italic;
+}
+.log-stderr .log-src {
+  color: var(--warn);
+}
+.emergency-actions {
+  margin-top: 12px;
+}
+@media (max-width: 640px) {
+  .emergency-head {
+    flex-direction: column;
+  }
+  .manifest-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Security review H2: the signed-in user, approvals and administration. */
+.emergency-user {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  justify-content: flex-end;
+}
+.emergency-connect details {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.emergency-connect details form {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.approval {
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 12px 0;
+  background: var(--surface);
+}
+.approval-rejected,
+.approval-invalidated,
+.approval-cancelled {
+  border-left-color: var(--fail);
+}
+.approval ul {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.approval-actions input {
+  flex: 1 1 240px;
+}
+.role-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+.audit-details {
+  max-width: 480px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}

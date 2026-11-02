@@ -8,6 +8,9 @@ docs/proposals/
 node_modules/
 dist/
 dist-fixtures/
+# Except bundled JavaScript actions in the examples, which ship their dist/ as real actions do
+# (the emergency demo's stamp action; docs/EMERGENCY_EXECUTION.md §6).
+!examples/**/dist/
 
 # Fixtures fetched by tools/fixtures/fetch (pinned in fixtures.lock.json)
 .fixtures/

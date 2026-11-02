@@ -6,7 +6,7 @@ import tseslint from "typescript-eslint";
 // Note on ordering: for the same rule, a later matching block replaces an earlier one. The general `src`
 // rules come first and the stricter `src/domain` block last, so the domain block keeps every restriction.
 export default tseslint.config(
-  { ignores: ["dist/", "dist-fixtures/", "review-screenshots/", "node_modules/", ".fixtures/", "coverage/", "playwright-report/", "test-results/"] },
+  { ignores: ["dist/", "dist-fixtures/", "review-screenshots/", "node_modules/", ".fixtures/", "examples/", "coverage/", "playwright-report/", "test-results/"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -23,8 +23,10 @@ export default tseslint.config(
   {
     // Only the GitHub transport may call fetch for GitHub data (the fixture-only demo gallery reads its own
     // local index); nothing persists to browser storage.
+    // The emergency executor client is the one other network caller: only the same-origin emergency API
+    // (api/emergency/), never GitHub, and never with the GitHub token (docs/EMERGENCY_EXECUTION.md).
     files: ["src/**/*.{ts,tsx}"],
-    ignores: ["src/github/transport.ts", "src/fixture-mode/gallery.tsx", "src/**/*.test.ts"],
+    ignores: ["src/github/transport.ts", "src/fixture-mode/gallery.tsx", "src/emergency/executor-client.ts", "src/**/*.test.ts"],
     rules: { "no-restricted-globals": ["error", "fetch", "localStorage", "sessionStorage", "indexedDB"] },
   },
   {

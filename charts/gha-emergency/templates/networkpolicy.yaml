@@ -1,0 +1,80 @@
+# Network isolation (security review C2). Always rendered: isolation is not optional. Policies only take effect where
+# the network plugin enforces them; the executor's canary proves that before running isolated executions.
+#
+# Baseline: every runner pod (executions and canary probes, in any network mode) has no ingress and no egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-runner-deny-all
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gha-emergency-runner
+      app.kubernetes.io/managed-by: gha-emergency-executor
+  policyTypes: ["Ingress", "Egress"]
+{{- if .Values.network.allowEgressMode }}
+---
+# Egress mode (opt-in, NOT isolated): public addresses and cluster DNS only. Private, link-local and metadata ranges,
+# and with them the Kubernetes API server, nodes and in-cluster services, stay unreachable.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-runner-egress
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gha-emergency-runner
+      app.kubernetes.io/managed-by: gha-emergency-executor
+      gha-emergency.github-actions-ui/network: egress
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml .Values.network.egressExcludeCIDRs | nindent 14 }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}
+---
+# Executor: its HTTP port in, the Kubernetes API (and DNS) out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-executor
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gha-emergency.executorSelector" . | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - ports:
+        {{- range .Values.network.apiServerPorts }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

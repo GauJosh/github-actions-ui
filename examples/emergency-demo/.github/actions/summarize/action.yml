@@ -1,0 +1,28 @@
+name: Summarize release
+description: Builds a one-line release summary and writes the job summary.
+inputs:
+  version:
+    required: true
+  checksum:
+    required: true
+  stamp:
+    required: true
+outputs:
+  line:
+    description: The summary line
+    value: ${{ steps.line.outputs.text }}
+runs:
+  using: composite
+  steps:
+    - id: line
+      shell: bash
+      run: |
+        text="version=${{ inputs.version }} checksum=${{ inputs.checksum }} stamp=${{ inputs.stamp }}"
+        echo "text=${text}" >> "$GITHUB_OUTPUT"
+        echo "${text}"
+    - shell: python
+      run: |
+        import os
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write("## Emergency demo release\n\n${{ inputs.version }}\n")
+        print("Job summary written")

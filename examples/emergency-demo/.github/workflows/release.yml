@@ -1,0 +1,51 @@
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build
+        required: true
+        default: "1.4.0"
+
+env:
+  APP_NAME: emergency-demo
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        name: Read version
+        run: |
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then version="$(cat src/app/VERSION)"; fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Preparing ${APP_NAME} ${version}"
+
+  build:
+    needs: prepare
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+    secrets:
+      signing-key: ${{ secrets.DEMO_SIGNING_KEY }}
+
+  report:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: summary
+        name: Summarize (composite action)
+        uses: ./.github/actions/summarize
+        with:
+          version: ${{ needs.prepare.outputs.version }}
+          checksum: ${{ needs.build.outputs.checksum }}
+          stamp: ${{ needs.build.outputs.stamp }}
+      - name: Show summary
+        run: echo "Release summary - ${{ steps.summary.outputs.line }}"

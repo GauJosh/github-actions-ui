@@ -1,0 +1,144 @@
+# Values for emergency execution (charts/gha-emergency/README.md, docs/EMERGENCY_EXECUTION.md).
+# The executor serves the UI and the emergency API, stores snapshots on its volume, and creates one Job per execution.
+# It talks only to the Kubernetes API (never to GitHub) and can't read Secrets.
+
+executor:
+  image:
+    repository: localhost/gha-emergency-executor
+    tag: local
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+runner:
+  image:
+    repository: localhost/gha-emergency-runner
+    # Required (security review H4): the image's digest as the cluster's nodes know it, e.g. sha256:4f1c... Runner
+    # Jobs refer to repository@digest, and the admission policy admits no other image, so a tag that later points at
+    # different content can't be run. The pull policy is IfNotPresent, also pinned by the policy.
+    digest: ""
+  # Limits for each execution's pod.
+  resources:
+    cpu: "1"
+    memory: 1Gi
+    # Working space for job workspaces (emptyDir sizeLimit and ephemeral-storage limit).
+    scratch: 2Gi
+  # Upper bound for any job or step timeout, and the Job's deadline (plus two minutes).
+  maxMinutes: 60
+  maxConcurrent: 2
+  # Finished Jobs are deleted after this; the executor archives their logs first when it sees them finish.
+  ttlSecondsAfterFinished: 86400
+
+# Snapshot storage. ReadWriteOnce: runner pods are scheduled on the executor's node to mount it read-only.
+persistence:
+  size: 5Gi
+  storageClassName: ""
+
+# Sign-in, roles and approval (security review H2). Every user has their own identity from an OpenID Connect
+# provider; the executor runs the sign-in itself (authorization code with PKCE) and keeps server-side sessions in
+# HttpOnly cookies. Roles (viewer, operator, approver, administrator) are assigned by administrators in the emergency
+# view and stored by the executor; they are never taken from the provider's tokens. The provider must not depend on
+# GitHub (it has to work during a GitHub outage) and must be reachable from the executor on port 443.
+auth:
+  oidc:
+    # e.g. https://login.microsoftonline.com/<tenant>/v2.0 or https://<org>.okta.com
+    issuer: ""
+    clientId: ""
+    # Exactly as registered with the provider: https://<host><basePath>api/emergency/auth/callback
+    redirectUri: ""
+    scopes: [openid, profile, email]
+    algorithms: [RS256, ES256, PS256]
+    # Shown on the sign-in button.
+    label: ""
+    # A confidential client's secret, from a Secret in this namespace (key below). Empty for a public client (PKCE).
+    clientSecret:
+      existingSecret: ""
+      key: client-secret
+    # Plain HTTP for the issuer: local development providers only (tools/emergency/dev-oidc.ts).
+    allowInsecureHttp: false
+  sessions:
+    maxHours: 8
+    idleMinutes: 60
+  # The first administrators, by the provider's issuer and subject (shown on the emergency view after signing in).
+  # Their administrator role is pinned: it can't be removed through the API. Example:
+  #   - { issuer: "https://login.example.com", subject: "00u1abcd" }
+  initialAdministrators: []
+  # Break-glass sign-in, for when the identity provider is unavailable: named accounts, each with its own credential
+  # (a key of the break-glass Secret below) and pinned roles (never administrator). Off unless accounts are listed.
+  # Every use needs a reason, is audited, and lasts at most sessionMinutes. Give accounts to different people: one
+  # can't approve its own executions. Migrating from the shared operator token: an account named operator-token
+  # uses the existing token as its credential. Example:
+  #   - { name: recovery-operator, roles: [operator] }
+  #   - { name: recovery-approver, roles: [approver] }
+  breakGlass:
+    accounts: []
+    sessionMinutes: 60
+
+# Which executions need an approver's decision before their Job is created (security review H2): "secrets" (it
+# receives a bound Secret), "egress" (egress network mode), "restricted" (a restricted snapshot), "all". Approvals are
+# bound to a digest of exactly what will run; a changed or suspended Secret binding invalidates them.
+approval:
+  requireFor: [secrets, egress]
+  # The approver may be neither the initiator nor the snapshot's preparer.
+  separationOfDuties: true
+  ttlMinutes: 60
+
+# The break-glass credentials Secret (formerly the shared operator token, which no longer authorizes API calls).
+# Leave existingSecret empty to generate one key per break-glass account (kept across upgrades, with any existing key).
+operatorToken:
+  existingSecret: ""
+  key: operator-token
+
+# Secret bindings (security review C1). An execution receives a Secret only through a binding, and only the keys
+# its snapshot requires. Bindings name exact snapshot digests (shown on the snapshot's page), so only content an
+# administrator reviewed can receive a Secret. The operator-token Secret can't be bound. Example:
+#
+#   secretBindings:
+#     - name: release-demo
+#       secret: demo-secrets            # an Opaque Secret in this namespace
+#       keys: [DEMO_SIGNING_KEY]        # the keys it may provide
+#       snapshots:                      # snapshot digests allowed to receive them
+#         - 9a5c0f56a8a74a7b51e0f04d353d7e19ecc78cfc017485520b35a72083e901a0
+secretBindings: []
+
+# Network isolation (security review C2). The boundary is NetworkPolicy, which only some network plugins enforce
+# (e.g. Calico, Cilium; not kindnet). The executor proves enforcement with a canary before isolated executions and
+# refuses them otherwise. DNS removal and GitHub hostnames pinned to 127.0.0.1 are defence in depth only.
+network:
+  # "egress" executions may reach public addresses (not private, link-local or metadata ranges). They are NOT
+  # isolated and do not simulate a GitHub outage: GitHub's IP addresses are public. Off unless enabled here.
+  allowEgressMode: false
+  # Destinations egress-mode runners can never reach (cluster, node, API server, metadata and other private ranges).
+  egressExcludeCIDRs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+    - 127.0.0.0/8
+  canary:
+    # An address an isolated runner must NOT reach (an internet host by IP; no DNS is involved).
+    externalTarget: "1.1.1.1:443"
+    # The cloud metadata service, which no runner may reach.
+    metadataTarget: "169.254.169.254:80"
+    # A passing check is reused for this long before the next execution re-runs it.
+    maxAgeSeconds: 900
+  # Egress ports the executor needs to reach the Kubernetes API server.
+  apiServerPorts: [443, 6443, 8443]
+
+# Install-time checks against the live cluster (security review C1): the namespace must be dedicated to emergency
+# execution and enforce Pod Security "restricted", it may hold no Secrets except the operator token, Helm's release
+# records and bound Secrets, and every bound Secret must exist, be Opaque and contain its keys. They run only when
+# Helm can reach the cluster (install, upgrade, --dry-run=server); "helm template" can't check anything.
+clusterChecks:
+  enabled: true
+  dedicatedLabel: gha-emergency.github-actions-ui/dedicated
+
+service:
+  port: 8080
+
+basePath: ""
+
+nodeSelector: {}
+tolerations: []

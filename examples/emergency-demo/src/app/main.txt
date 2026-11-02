@@ -1,0 +1,2 @@
+Hello from the emergency demo application.
+This file is packaged into the snapshot and checksummed during the build.

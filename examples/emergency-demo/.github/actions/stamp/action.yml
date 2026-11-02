@@ -1,0 +1,15 @@
+name: Stamp build
+description: Computes a signed build stamp from the version and a signing key.
+inputs:
+  version:
+    description: Version being built
+    required: true
+  signing-key:
+    description: Key used to sign the stamp (a secret)
+    required: true
+outputs:
+  stamp:
+    description: The signed stamp
+runs:
+  using: node20
+  main: dist/index.js
