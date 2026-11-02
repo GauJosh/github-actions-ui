@@ -13,6 +13,7 @@ import { parseLock } from "../fixtures/lockfile.ts";
 import { SYNTHETIC_LARGE, syntheticJobs, syntheticLog, syntheticRun } from "./synthetic.ts";
 import { EMPTY_REPO, LARGE_LOG_WORKFLOW, SYNTHETIC_OWNER, SYNTHETIC_REPO, largeLogRunExtras, syntheticArtifacts, syntheticDeployments, syntheticGraphRuns, syntheticReleases } from "./synthetic-graphs.ts";
 import { ENTERPRISE_OWNER, ENTERPRISE_REPO, enterpriseRuns, gallery } from "./enterprise.ts";
+import { createEmergencyDemo } from "./emergency-demo.ts";
 
 export const FIXTURE_PREFIX = "/__fixtures";
 
@@ -246,6 +247,7 @@ function paginate<T>(items: T[], url: URL, origin: string): { page: T[]; link?: 
 }
 
 export function createFixtureMiddleware(options: { repoRoot: string; lockPath: string }) {
+  const emergencyDemo = createEmergencyDemo(options.repoRoot);
   let state: { corpus: Corpus } | { error: string } | null = null;
   const decompressed = new Map<number, Buffer>();
 
@@ -278,6 +280,8 @@ export function createFixtureMiddleware(options: { repoRoot: string; lockPath: s
     const url = new URL(req.url ?? "/", "http://fixture.local");
     if (!url.pathname.startsWith(FIXTURE_PREFIX + "/")) return next();
     if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { message: "Fixture API is read-only" });
+    const demo = emergencyDemo(url.pathname.slice(FIXTURE_PREFIX.length), url);
+    if (demo) return send(res, demo.status, demo.body);
 
     const ready = init();
     if ("error" in ready) return send(res, 503, { message: ready.error });

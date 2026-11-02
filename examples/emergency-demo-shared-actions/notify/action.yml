@@ -1,0 +1,12 @@
+name: Notify
+description: Prints a notification and records it as an output (stands in for a shared organization action).
+inputs:
+  message:
+    description: Message to send
+    required: true
+outputs:
+  sent:
+    description: The message that was sent
+runs:
+  using: node20
+  main: index.js

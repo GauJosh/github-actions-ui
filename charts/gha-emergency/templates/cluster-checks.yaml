@@ -1,0 +1,39 @@
+{{- /*
+Install-time checks against the live cluster (security review C1). This template renders nothing; it fails the
+install or upgrade when the namespace is not safe for emergency execution. lookup returns nothing without a cluster
+("helm template", client-side dry runs), so the checks run only when Helm can see the namespace.
+*/ -}}
+{{- if .Values.clusterChecks.enabled }}
+{{- $ns := lookup "v1" "Namespace" "" .Release.Namespace }}
+{{- if $ns }}
+{{- $labels := default (dict) $ns.metadata.labels }}
+{{- if not (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy") }}
+{{- fail "The cluster does not serve admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy (Kubernetes 1.30 or later): runner Jobs can't be constrained (security review H4)" }}
+{{- end }}
+{{- if ne (get $labels "pod-security.kubernetes.io/enforce") "restricted" }}
+{{- fail (printf "Namespace %s must enforce Pod Security \"restricted\" (label pod-security.kubernetes.io/enforce=restricted)" .Release.Namespace) }}
+{{- end }}
+{{- if ne (get $labels .Values.clusterChecks.dedicatedLabel) "true" }}
+{{- fail (printf "Namespace %s must be dedicated to emergency execution: label it %s=true after checking that nothing else runs or is stored there" .Release.Namespace .Values.clusterChecks.dedicatedLabel) }}
+{{- end }}
+{{- $operator := include "gha-emergency.tokenSecret" . }}
+{{- $bound := list }}
+{{- range .Values.secretBindings }}{{ $bound = append $bound .secret }}{{ end }}
+{{- $secrets := lookup "v1" "Secret" .Release.Namespace "" }}
+{{- $byName := dict }}
+{{- range $s := (default (list) $secrets.items) }}
+{{- $_ := set $byName $s.metadata.name $s }}
+{{- $helmRecord := and (eq $s.type "helm.sh/release.v1") (hasPrefix (printf "sh.helm.release.v1.%s." $.Release.Name) $s.metadata.name) }}
+{{- $oidcClient := $.Values.auth.oidc.clientSecret.existingSecret }}
+{{- if not (or (eq $s.metadata.name $operator) (and $oidcClient (eq $s.metadata.name $oidcClient)) $helmRecord (has $s.metadata.name $bound)) }}
+{{- fail (printf "Namespace %s holds Secret %s, which is neither the break-glass credentials, the identity provider's client secret, a Helm record of this release, nor bound in secretBindings. Emergency execution needs a dedicated namespace: move it, or bind it." $.Release.Namespace $s.metadata.name) }}
+{{- end }}
+{{- end }}
+{{- range $b := .Values.secretBindings }}
+{{- $s := get $byName $b.secret }}
+{{- if not $s }}{{ fail (printf "Bound Secret %s does not exist in %s: create it before installing" $b.secret $.Release.Namespace) }}{{ end }}
+{{- if ne $s.type "Opaque" }}{{ fail (printf "Bound Secret %s is of type %s; only Opaque Secrets can be bound" $b.secret $s.type) }}{{ end }}
+{{- range $b.keys }}{{ if not (hasKey (default (dict) $s.data) .) }}{{ fail (printf "Bound Secret %s has no key %s" $b.secret .) }}{{ end }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}

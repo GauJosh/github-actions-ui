@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createEnvironment, modeFromLocation, type Mode } from "../app/environment";
 import { patProvider } from "../auth/pat-provider";
 import { parseHash } from "../domain/run-url";
@@ -8,6 +8,10 @@ import { ConnectView } from "./ConnectView";
 import { RunExplorer } from "./explorer/RunExplorer";
 import { Home } from "./Home";
 import { RepoDashboard } from "./RepoDashboard";
+import { parseEmergencyHash } from "./emergency/route";
+
+// Emergency execution is a separate area, loaded only when opened.
+const EmergencyView = lazy(() => import("./emergency/EmergencyView").then((m) => ({ default: m.EmergencyView })));
 
 const subscribeHash = (onChange: () => void) => {
   window.addEventListener("hashchange", onChange);
@@ -77,6 +81,8 @@ function Main({ mode }: { mode: Mode }) {
   const env = useMemo(() => createEnvironment(mode, window.location), [mode]);
   const hash = useSyncExternalStore(subscribeHash, () => window.location.hash);
   const route = parseHash(hash);
+  // Emergency execution never needs GitHub to be reachable, so it is routed before the GitHub sign-in.
+  const emergency = parseEmergencyHash(hash);
   const [connected, setConnected] = useState(() => patProvider.describe().connected);
   const queryClient = useQueryClient();
 
@@ -93,12 +99,19 @@ function Main({ mode }: { mode: Mode }) {
       <header className="topbar">
         <Brand />
         <div className="topbar-actions">
+          <a href="#/emergency" className="emergency-link" data-testid="emergency-nav">
+            Emergency execution
+          </a>
           <ThemeToggle />
           {mode === "live" && connected && <button onClick={disconnect}>Disconnect</button>}
         </div>
       </header>
       <main>
-        {mode === "live" && !connected ? (
+        {emergency ? (
+          <Suspense fallback={<p className="state">Loading emergency execution…</p>}>
+            <EmergencyView env={env} route={emergency} githubConnected={mode === "fixtures" || connected} />
+          </Suspense>
+        ) : mode === "live" && !connected ? (
           <ConnectView onConnected={() => setConnected(true)} />
         ) : route.run ? (
           <RunExplorer key={`${route.run.owner}/${route.run.repo}/${route.run.runId}`} env={env} run={route.run} route={route} />

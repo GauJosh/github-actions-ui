@@ -1,0 +1,13 @@
+apiVersion: v2
+name: gha-emergency
+description: Emergency execution for GitHub Actions UI - runs prepared, immutable workflow snapshots as Kubernetes Jobs when GitHub Actions is unavailable. Separate from the read-only gha-ui chart.
+type: application
+version: 0.1.0
+appVersion: "0.0.0"
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/GauJosh/github-actions-ui
+sources:
+  - https://github.com/GauJosh/github-actions-ui
+keywords:
+  - github-actions
+  - disaster-recovery

@@ -7,12 +7,12 @@
   - Live smoke test: passed, run by the user with their own token.
   - Security follow-ups applied before acceptance: fixture mode is compiled out of production builds, and all unit tests fail closed on network access (ARCHITECTURE §11.2).
 - **Fixture pin:** `184ede06780166a90bdb173adda9a23a5b6545c4`, recorded in `fixtures.lock.json`.
-- **Repository:** `https://github.com/GauJosh/github-actions-ui`, **private**. Open source first is the intended direction. Publishing waits for a separate decision after the first vertical slice is reviewed.
-- **Repository dashboard, pipeline explorer and release views** (requested 2026-10-20, ahead of the original M2–M5 order): implemented locally; design direction **approved** 2026-10-20; not yet committed.
+- **Repository:** `https://github.com/GauJosh/github-actions-ui`, **public** (visibility checked 2026-10-29), under Apache-2.0. It was private when this status was first written, and open source first was the intended direction.
+- **Repository dashboard, pipeline explorer and release views** (requested 2026-10-20, ahead of the original M2–M5 order): implemented; design direction **approved** 2026-10-20; committed in `9ac9df8`.
   - Covers part of M4 (finding runs: repository list, run list with filters) and a new execution-graph view of each run.
   - Large multi-environment runs open on a release overview (phases → jobs), with focused phase views and the full graph as an alternative. Demo gallery of synthetic enterprise scenarios in fixture mode only.
   - Dependency edges come only from `needs:` in the workflow file at the run's commit. Details: ARCHITECTURE §11.3.
-  - **Step-to-log navigation** (requested 2026-10-20): step mapping v2 with checks C1–C4, the risk flag and the "approximate" and "unavailable" states, implemented locally, **in review**, not committed (ARCHITECTURE §11.4). It covers M2 acceptance criteria 1 and 2.
+  - **Step-to-log navigation** (requested 2026-10-20): step mapping v2 with checks C1–C4, the risk flag and the "approximate" and "unavailable" states, implemented, **in review**; committed in `9ac9df8` (ARCHITECTURE §11.4). It covers M2 acceptance criteria 1 and 2.
   - **Nested reusable-workflow hierarchy** (requested 2026-10-20 after the first work trial): implemented and pushed (ARCHITECTURE §11.3).
   - **Essential logs and log exploration** (requested 2026-10-20): display modes, conservative classification, quick filters, search and failure-investigation controls (ARCHITECTURE §8, log display modes). Pushed.
   - **Failure detection and step-first logs** (requested 2026-10-21 after a work trial missed a Node.js failure): evidence tiers with failure signatures and stack traces, step headings with collapse, the failure evidence panel, scope and error navigation (ARCHITECTURE §8, error evidence tiers). Pushed.
@@ -38,6 +38,7 @@
   - **Excerpt boundaries from log rows** (requested 2026-10-27, Feature 5D): a keyboard-accessible ⋮ menu on each log line with Set as first line / Set as last line, filling the same excerpt form; the range is shown and shaded, reversed ranges are explained and cannot be added (ARCHITECTURE §11.13). Committed in Checkpoint 2 (Features 5A–5D).
   - M2's other log-exploration items (ANSI, groups, scaled scrolling, the worker cache) are still open. Q2 and Q10 remain open.
 - **Containerized hosting** (approved 2026-10-28; Hosting track below): K1–K4 were implemented and verified locally on 2026-10-28, with a pre-commit audit (K5–K6). ARCHITECTURE A10–A12, §7.4 and §11.14.
+  - **Merged into `main` on 2026-10-29** as `226a5c3` (PR #10). All six GitHub checks passed on that commit, including the "Helm chart" job.
   - K1 is the production image with a Node static server; K2 is the `charts/gha-ui` Helm chart, verified on Minikube; K3 adds documentation and CI chart validation.
   - The app is unchanged: browser-only, read-only, with the token in memory.
   - A backend, Gateway API access, GitOps examples and emergency execution are **not approved**. Each needs its own decision.
@@ -362,8 +363,16 @@ Containerized static hosting was approved on 2026-10-28 (ARCHITECTURE A10–A12)
 |---|---|---|
 | **K1** | Production image (`deploy/ui/`): Node static server, security headers from their single source, root and path-prefix hosting, non-root and read-only | Implemented; verified locally (tests, Podman container) |
 | **K2** | Helm chart (`charts/gha-ui/`): Deployment, Service, a ServiceAccount with no permissions, `helm test` | Implemented; verified on Minikube at `/` and `/gha-ui/` |
-| **K3** | Architecture record, and a CI job that lints, renders and checks the chart's invariants | Implemented and run locally; **the CI job had not run on GitHub as of 2026-10-28** |
+| **K3** | Architecture record, and a CI job that lints, renders and checks the chart's invariants | Implemented. The CI job first ran on GitHub on 2026-10-29 and passed, on PR #10 and on `main` at `226a5c3`. It had not run there as of 2026-10-28 |
 | **K4** | Integration review: the documented path repeated from a clean export of the tree, through Minikube install, test, upgrade, rollback and uninstall | Done locally (ARCHITECTURE §11.14); README and checker fixes; values schema tightened after the pre-commit audit |
+
+**Merged 2026-10-29:** K1–K4, the pre-commit audit fixes and the seccomp-profile validation went into `main` as `226a5c3` (PR #10, squash-merged). Before it, PR #9 (`26cac60`) fixed a browser test on `main` that measured the large graph against the window rather than the graph viewport. All six GitHub checks passed on `226a5c3`:
+- Lint and typecheck;
+- Unit and contract tests;
+- Production build;
+- Validate workflows and dependencies;
+- Helm chart;
+- Browser tests.
 
 **Acceptance criteria (K1–K3):**
 - The same browser tests pass against the local server, the container and the Kubernetes Service, at both paths, with the log worker.
@@ -371,11 +380,34 @@ Containerized static hosting was approved on 2026-10-28 (ARCHITECTURE A10–A12)
 - `helm test` passes.
 - CI renders and checks the chart without a cluster, registry or secrets.
 
-**Possible next steps, each needing its own decision and approval:**
+**Possible next steps, each needing its own decision and approval.** Options and trade-offs are in `docs/KUBERNETES_ACCESS.md`, a proposal that is not approved:
 - External access with a Gateway API `HTTPRoute`, verifying that headers pass through unchanged (ARCHITECTURE §12).
 - GitOps examples (Argo CD, Flux).
 - A backend and its chart. This would revise the "no backend in v1" constraint (D3) and needs a threat model first.
-- Recovery packages and emergency workflow execution. These would end the read-only constraint (D4) and are not approved.
+- Recovery help for maintainers of public and open-source repositories (`docs/KUBERNETES_ACCESS.md` §4; not approved, not validated):
+  - **first to investigate:** a read-only outage impact and catch-up view (K-10), covering failed and cancelled runs, possible missed scheduled runs, PRs waiting on checks where readable, and links to re-run on GitHub. Causes stay `unknown` unless evidence supports them;
+  - **possibly later:** a caveated "release without Actions" preparation guide (K-11), which maintainers run with their own tools;
+  - the UI stays read-only, with no new privileged credentials, caching, backend, scheduler or executor;
+  - **next step:** the problem-validation study in `docs/RECOVERY_VALIDATION_STUDY.md`.
+- Optional organization context: running recovery operations on an organization's own infrastructure (researched in `docs/KUBERNETES_ACCESS.md` §7–§8; not approved):
+  - the research recommends a maintained break-glass runbook, plus a read-only drift check, outside this repository;
+  - running GitHub Actions workflows outside GitHub is a non-goal;
+  - this project's read-only constraint (D4) would change only if execution were placed in this repository, which the assessment recommends against;
+  - `docs/PLATFORM_RECOVERY_DISCOVERY.md` is that context's checklist.
+
+## Emergency execution (added 2026-10-30)
+
+- **Directed by the project owner.** Design, compatibility, security and run steps: `docs/EMERGENCY_EXECUTION.md`.
+- **Status:** MVP implemented; committed with the security remediations through H2 on 2026-11-02, not deployed. The demo pipeline was prepared in the UI and run as a Kubernetes Job on local minikube, with GitHub unreachable from the Job.
+- **Known gaps:** listed in `docs/EMERGENCY_EXECUTION.md` §9, including the dependency on an external identity provider and NetworkPolicy not being enforced on the original minikube profile.
+- **Security review** (`docs/EMERGENCY_EXECUTION_SECURITY_REVIEW.md`, 2026-10-30):
+  - C1, C2, H1, H2, H3 and H4 are remediated and committed (checkpoint through H2, 2026-11-02). C1 and C2 were validated live on the separate Calico profile `gha-sec`, which still runs the pre-H1 images; the original `minikube` deployment is unchanged.
+  - M1–M7 and the low findings are open. H2 is untested with a real identity provider and its custom ID-token verification needs a focused review. It is **not ready for production**.
+- **Next, if pursued:**
+  - the medium findings M1–M7;
+  - a full live preparation from a real repository;
+  - a multi-node storage option;
+  - testing on a cluster whose network plugin enforces NetworkPolicy.
 
 ## Not on this roadmap
 

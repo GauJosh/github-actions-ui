@@ -1,0 +1,37 @@
+{{- /*
+Sign-in, sessions and approval (security review H2), read by the executor (deploy/emergency/executor/auth/config.ts,
+which validates it again and refuses to start on anything invalid).
+*/ -}}
+{{- $o := .Values.auth.oidc }}
+{{- $accounts := default (list) .Values.auth.breakGlass.accounts }}
+{{- if and (not $o.issuer) (not $accounts) }}
+{{- fail "Configure sign-in: auth.oidc (an OpenID Connect provider) and/or auth.breakGlass.accounts (security review H2). The shared operator token no longer authorizes the API." }}
+{{- end }}
+{{- if $o.issuer }}
+{{- if or (not $o.clientId) (not $o.redirectUri) }}{{ fail "auth.oidc needs clientId and redirectUri" }}{{ end }}
+{{- if not (hasSuffix "/api/emergency/auth/callback" $o.redirectUri) }}{{ fail "auth.oidc.redirectUri must end with /api/emergency/auth/callback" }}{{ end }}
+{{- if and (not $o.allowInsecureHttp) (not (hasPrefix "https://" $o.issuer)) }}{{ fail "auth.oidc.issuer must be HTTPS" }}{{ end }}
+{{- end }}
+{{- range $accounts }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,62}$" (toString .name)) }}{{ fail (printf "auth.breakGlass.accounts: %v is not a lowercase name" .name) }}{{ end }}
+{{- if has "administrator" (default (list) .roles) }}{{ fail (printf "auth.breakGlass.accounts: %s can't be an administrator" .name) }}{{ end }}
+{{- end }}
+{{- $oidc := dict }}
+{{- if $o.issuer }}
+{{- $oidc = dict "issuer" $o.issuer "clientId" $o.clientId "redirectUri" $o.redirectUri "scopes" $o.scopes "algorithms" $o.algorithms "label" $o.label "allowInsecureHttp" $o.allowInsecureHttp }}
+{{- if $o.clientSecret.existingSecret }}{{ $_ := set $oidc "clientSecretFile" (printf "/etc/gha-emergency-oidc/%s" $o.clientSecret.key) }}{{ end }}
+{{- end }}
+{{- $config := dict
+  "sessions" .Values.auth.sessions
+  "initialAdministrators" (default (list) .Values.auth.initialAdministrators)
+  "breakGlass" (dict "accounts" $accounts "sessionMinutes" .Values.auth.breakGlass.sessionMinutes "credentialsDir" "/etc/gha-emergency")
+  "approval" .Values.approval }}
+{{- if $oidc }}{{ $_ := set $config "oidc" $oidc }}{{ end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-auth
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+data:
+  auth.json: {{ toJson $config | quote }}

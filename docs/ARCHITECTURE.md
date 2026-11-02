@@ -1,6 +1,6 @@
 # Architecture — GitHub Actions UI
 
-**Status:** Approved 2026-10-20. A1–A7 and A9 are approved; **A8 is approved provisionally**. **No application code exists.**
+**Status:** Approved 2026-10-20. A1–A7 and A9 are approved; **A8 is approved provisionally**. No application code existed when this document was approved. The implemented state is tracked in ROADMAP and in the implementation notes in §11.
 
 **Sources:**
 - Milestones: `docs/ROADMAP.md` (in this repository).
@@ -341,12 +341,16 @@ The log worker script is served with `connect-src 'none'`.
   - non-root UID 1000, read-only root filesystem, no volumes;
   - all capabilities dropped, no privilege escalation, seccomp `RuntimeDefault`;
   - no service-account token, and no Kubernetes API permissions, since the UI never calls the API;
-  - no outbound network: the image was checked with networking disabled.
+  - no outbound network needed: the image was checked with networking disabled. The chart does not enforce this. It adds no NetworkPolicy, so the cluster does not block the pod's egress.
   - The chart's values schema rejects values that would weaken this, at install time. Removing seccomp from one level is allowed, as long as the other keeps it. `tools/chart/check-chart.ts` checks in CI that each such override is refused, and checks the rendered templates.
 - **Residual risks:**
   - The hosted page is where users type a token, so whoever controls the image, or anything between the user and the pod (a proxy or CDN), can affect it. HTTPS, trusted images and immutable tags or digests are required outside local port-forwarding.
   - A proxy that adds, removes or rewrites headers would weaken the CSP. This is not yet verified for any Gateway or Ingress.
   - Base images are pinned by tag, not digest (`deploy/ui/README.md`).
+- **Beyond A10–A12 (proposals only, none approved):**
+  - `docs/KUBERNETES_ACCESS.md` covers options for external access, TLS and backend authentication. It also covers recovery help for maintainers: a read-only outage impact view to investigate first. Its research on organization-run recovery is an optional context. It lists the decisions these need (K-1 to K-11, Q-R1 to Q-R6).
+  - `docs/RECOVERY_VALIDATION_STUDY.md` is the problem-validation study that comes before any recovery decision.
+  - `docs/PLATFORM_RECOVERY_DISCOVERY.md` is the checklist for the optional organization context (Q-R1).
 
 ---
 
@@ -860,6 +864,29 @@ A pure model (`src/domain/report/report.ts`) that builds a shareable report of o
   - kind, AKS, EKS and GKE;
   - image signing and SBOM, and base-image digests;
   - external access (Gateway API or Ingress), NetworkPolicy, PodDisruptionBudget and autoscaling.
+
+### 11.15 Emergency execution (owner-directed 2026-10-30, committed 2026-11-02 with remediations through H2, for review)
+
+**The decision and what it covers:**
+- The project owner directed an emergency execution capability.
+- It is a separate, optional component, specified in `docs/EMERGENCY_EXECUTION.md`.
+- It changes the earlier read-only-only boundary **for that component only**.
+
+**What it adds:**
+- an executor service (`deploy/emergency/executor/`, chart `charts/gha-emergency`) that stores immutable snapshots and creates Kubernetes Jobs;
+- a runner image;
+- a lazy-loaded `#/emergency` area in the UI;
+- three GET methods in the GitHub client (commit, tree, blob).
+
+**What stays the same in the read-only app:**
+- its token and permissions;
+- its GET-only transport;
+- its CSP (the emergency API is same-origin);
+- the `gha-ui` chart.
+
+One lint boundary changed: `src/emergency/executor-client.ts` may call `fetch`, for the same-origin emergency API only.
+
+Proposals K-1…K-11, Q-R1 and Q-R2 remain as recorded and are not approved by this note.
 
 ## 12. Open risks (not validated)
 

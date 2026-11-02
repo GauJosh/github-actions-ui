@@ -1,0 +1,31 @@
+Emergency execution is installed in namespace {{ .Release.Namespace }}.
+
+1. Open the UI (it is not exposed outside the cluster):
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gha-emergency.fullname" . }} 18093:{{ .Values.service.port }}
+
+   then http://127.0.0.1:18093/#/emergency
+
+2. Sign in (security review H2):
+{{- if .Values.auth.oidc.issuer }}
+   with {{ default .Values.auth.oidc.issuer .Values.auth.oidc.label }}. New users have no roles until an administrator
+   gives them some on the emergency view's Administration page.{{ if not .Values.auth.initialAdministrators }} No initial
+   administrator is configured (auth.initialAdministrators): nobody can assign roles yet.{{ end }}
+{{- end }}
+{{- range .Values.auth.breakGlass.accounts }}
+   Break-glass account {{ .name }} ({{ join ", " .roles }}), for when the identity provider is unavailable; its credential:
+     kubectl -n {{ $.Release.Namespace }} get secret {{ include "gha-emergency.tokenSecret" $ }} -o jsonpath='{.data.{{ .name }}}' | base64 -d
+{{- end }}
+   The old shared operator token no longer authorizes API calls.
+
+3. Secrets a snapshot needs are supplied as a Kubernetes Secret in this namespace, one key per secret name, e.g.
+
+     kubectl -n {{ .Release.Namespace }} create secret generic demo-secrets --from-literal=DEMO_SIGNING_KEY=...
+
+   and bound to exact snapshot digests with the secretBindings value. Create it just before the upgrade that binds it:
+   the chart refuses Secrets that aren't bound, and a digest exists only once a snapshot is prepared.
+   Only the keys a snapshot requires are mounted, and only into its runner pod; the executor never reads it.
+
+4. Isolated executions run only when the executor's network canary proves that NetworkPolicy is enforced. Check:
+
+     the "Network" section of a snapshot's page, or GET api/emergency/network-check

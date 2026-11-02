@@ -1,0 +1,36 @@
+# Least privilege for the executor: create and manage the runner Jobs and read their pods, logs and events (why a
+# pod can't start), in this namespace only. No access to Secrets, ConfigMaps or any other resource.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-executor
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}-executor
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gha-emergency.fullname" . }}-executor
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gha-emergency.fullname" . }}-executor
+    namespace: {{ .Release.Namespace }}

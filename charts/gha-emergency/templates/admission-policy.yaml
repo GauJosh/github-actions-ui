@@ -1,0 +1,246 @@
+{{- /*
+Security review H4. The executor may create Jobs (rbac.yaml), and RBAC can't constrain what a Job runs. This
+ValidatingAdmissionPolicy does, in the API server, whatever the executor sends: every Job in the release namespace,
+and every Pod a Job creates there (after mutating admission, so injected sidecars are refused too), must be one of
+the shapes deploy/emergency/executor/job-spec.ts builds:
+- an execution (the runner command), or a network canary (the canary command);
+- the runner image by digest, IfNotPresent, one container, no init or ephemeral containers;
+- the runner service account, no token, no host namespaces, non-root, RuntimeDefault seccomp, no privilege
+  escalation, read-only root filesystem, all capabilities dropped;
+- bounded resources, one attempt, a deadline;
+- only the snapshot (read-only), size-limited emptyDirs, and Secret keys the bindings give that exact snapshot;
+- no Secret or ConfigMap environment references; the runner's NetworkPolicy labels.
+Jobs are also refused in a namespace that isn't dedicated and Pod Security "restricted". The executor proves the
+policy is enforced before any execution (deploy/emergency/executor/admission-check.ts). Needs Kubernetes 1.30+.
+*/ -}}
+{{- $policy := include "gha-emergency.admissionPolicy" . }}
+{{- $full := include "gha-emergency.fullname" . }}
+{{- $ns := .Release.Namespace }}
+{{- $image := include "gha-emergency.runnerImage" . }}
+{{- $deadline := add (mul (int .Values.runner.maxMinutes) 60) 120 }}
+{{- $modes := list "isolated" }}
+{{- if .Values.network.allowEgressMode }}{{ $modes = append $modes "egress" }}{{ end }}
+{{- /* "snapshots/<digest>:<secret>:<key>": each key a binding gives each snapshot (bindings.yaml validates them). */}}
+{{- $grants := list }}
+{{- range $b := .Values.secretBindings }}{{ range $d := $b.snapshots }}{{ range $k := $b.keys }}{{ $grants = append $grants (printf "snapshots/%s:%s:%s" $d $b.secret $k) }}{{ end }}{{ end }}{{ end }}
+{{- /* Must match job-spec.ts (RUNNER_NODE, buildJob and buildCanaryJob); tools/emergency/admission-check.ts tests both. */}}
+{{- $execCommand := list "/usr/local/libexec/gha-emergency-runner-node" "--disable-sigusr1" "--disable-warning=ExperimentalWarning" "/app/deploy/emergency/runner/main.ts" }}
+{{- $canaryCommand := list "node" "--disable-warning=ExperimentalWarning" "/app/deploy/emergency/runner/canary.ts" }}
+{{- $execEnv := list "GHA_EMERGENCY_EXECUTION" "GHA_EMERGENCY_SNAPSHOT_DIR" "GHA_EMERGENCY_WORK_DIR" "GHA_EMERGENCY_SECRETS_DIR" "GHA_EMERGENCY_MAX_MINUTES" "GHA_EMERGENCY_NETWORK_PROBE" }}
+{{- $canaryEnv := list "GHA_EMERGENCY_CANARY_TARGETS" }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $policy }}
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  # A request the policy can't evaluate is refused.
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $ns }}
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchConditions:
+    # Pods: those a Job owns. The executor's own pod comes from its ReplicaSet; nothing in the namespace may create
+    # pods directly except cluster administrators.
+    - name: jobs-and-their-pods
+      expression: >-
+        request.resource.resource == 'jobs' ||
+        (has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(r, r.kind == 'Job' && r.apiVersion.startsWith('batch/')))
+    # Updates: only those that change the spec (metadata-only updates, e.g. finalizers during deletion, pass).
+    - name: spec-changes
+      expression: "request.operation == 'CREATE' || object.spec != oldObject.spec"
+  variables:
+    - name: isJob
+      expression: "request.resource.resource == 'jobs'"
+    - name: pod
+      expression: "variables.isJob ? object.spec.template.spec : object.spec"
+    - name: labels
+      expression: >-
+        variables.isJob
+          ? (has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) ? object.spec.template.metadata.labels : {})
+          : (has(object.metadata.labels) ? object.metadata.labels : {})
+    - name: c
+      expression: "variables.pod.containers[0]"
+    - name: isExecution
+      expression: >-
+        has(variables.c.command) && variables.c.command == {{ toJson $execCommand }}
+    - name: isCanary
+      expression: >-
+        has(variables.c.command) && variables.c.command == {{ toJson $canaryCommand }}
+    - name: runnerLabelled
+      expression: >-
+        'app.kubernetes.io/name' in variables.labels && variables.labels['app.kubernetes.io/name'] == 'gha-emergency-runner' &&
+        'app.kubernetes.io/managed-by' in variables.labels && variables.labels['app.kubernetes.io/managed-by'] == 'gha-emergency-executor'
+    - name: volumes
+      expression: "has(variables.pod.volumes) ? variables.pod.volumes : []"
+    - name: mounts
+      expression: "has(variables.c.volumeMounts) ? variables.c.volumeMounts : []"
+    - name: env
+      expression: "has(variables.c.env) ? variables.c.env : []"
+    # The snapshot directory the pod mounts ("snapshots/<digest>"), or "" when it mounts none.
+    - name: snapshotPath
+      expression: >-
+        variables.mounts.exists(m, m.name == 'snapshot' && has(m.subPath))
+          ? variables.mounts.filter(m, m.name == 'snapshot' && has(m.subPath))[0].subPath : ''
+    - name: grants
+      expression: {{ toJson $grants | quote }}
+    # Job-level limits (true for Pods). A variable is evaluated only when used, so Pods never read Job-only fields.
+    - name: jobLimits
+      expression: >-
+        !variables.isJob || (
+          has(object.spec.backoffLimit) && object.spec.backoffLimit == 0 &&
+          (!has(object.spec.parallelism) || object.spec.parallelism <= 1) &&
+          (!has(object.spec.completions) || object.spec.completions <= 1) &&
+          !(has(object.spec.manualSelector) && object.spec.manualSelector) &&
+          has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds <= {{ $deadline }})
+  validations:
+    - expression: >-
+        request.namespace == '{{ $ns }}' &&
+        'pod-security.kubernetes.io/enforce' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' &&
+        '{{ .Values.clusterChecks.dedicatedLabel }}' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['{{ .Values.clusterChecks.dedicatedLabel }}'] == 'true'
+      message: "runner Jobs run only in the dedicated namespace {{ $ns }}, labelled pod-security.kubernetes.io/enforce=restricted and {{ .Values.clusterChecks.dedicatedLabel }}=true"
+      reason: Forbidden
+    - expression: >-
+        size(variables.pod.containers) == 1 && variables.c.name == 'runner' &&
+        (!has(variables.pod.initContainers) || size(variables.pod.initContainers) == 0) &&
+        (!has(variables.pod.ephemeralContainers) || size(variables.pod.ephemeralContainers) == 0)
+      message: "exactly one container, named runner: no sidecars, init containers or ephemeral containers"
+      reason: Forbidden
+    - expression: "variables.c.image == '{{ $image }}' && has(variables.c.imagePullPolicy) && variables.c.imagePullPolicy == 'IfNotPresent'"
+      message: "the only image allowed is the runner image by digest, {{ $image }}, with imagePullPolicy IfNotPresent"
+      reason: Forbidden
+    - expression: >-
+        (variables.isExecution || variables.isCanary) &&
+        (!has(variables.c.args) || size(variables.c.args) == 0) &&
+        !has(variables.c.lifecycle) && !has(variables.c.livenessProbe) && !has(variables.c.readinessProbe) && !has(variables.c.startupProbe) &&
+        !has(variables.c.ports) && !has(variables.c.volumeDevices) && !has(variables.c.restartPolicy)
+      message: "the container runs only the runner or the network canary: no other command, arguments, hooks, probes or ports"
+      reason: Forbidden
+    - expression: >-
+        !(has(variables.pod.hostNetwork) && variables.pod.hostNetwork) &&
+        !(has(variables.pod.hostPID) && variables.pod.hostPID) &&
+        !(has(variables.pod.hostIPC) && variables.pod.hostIPC) &&
+        !(has(variables.pod.shareProcessNamespace) && variables.pod.shareProcessNamespace)
+      message: "no host network, PID or IPC namespace, and no shared process namespace"
+      reason: Forbidden
+    - expression: >-
+        variables.pod.serviceAccountName == '{{ $full }}-runner' &&
+        has(variables.pod.automountServiceAccountToken) && variables.pod.automountServiceAccountToken == false
+      message: "the runner service account ({{ $full }}-runner) without its token: automountServiceAccountToken must be false"
+      reason: Forbidden
+    - expression: >-
+        has(variables.pod.securityContext) &&
+        has(variables.pod.securityContext.runAsNonRoot) && variables.pod.securityContext.runAsNonRoot == true &&
+        has(variables.pod.securityContext.runAsUser) && variables.pod.securityContext.runAsUser != 0 &&
+        (!has(variables.pod.securityContext.runAsGroup) || variables.pod.securityContext.runAsGroup != 0) &&
+        (!has(variables.pod.securityContext.fsGroup) || variables.pod.securityContext.fsGroup != 0) &&
+        has(variables.pod.securityContext.seccompProfile) && variables.pod.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        !has(variables.pod.securityContext.sysctls) && !has(variables.pod.securityContext.seLinuxOptions) &&
+        !has(variables.pod.securityContext.windowsOptions) &&
+        (!has(variables.pod.securityContext.appArmorProfile) || variables.pod.securityContext.appArmorProfile.type == 'RuntimeDefault')
+      message: "the pod securityContext must run as non-root (runAsNonRoot, a non-zero runAsUser) with RuntimeDefault seccomp, and set no sysctls, SELinux, Windows or AppArmor overrides"
+      reason: Forbidden
+    - expression: >-
+        has(variables.c.securityContext) &&
+        has(variables.c.securityContext.allowPrivilegeEscalation) && variables.c.securityContext.allowPrivilegeEscalation == false &&
+        !(has(variables.c.securityContext.privileged) && variables.c.securityContext.privileged) &&
+        has(variables.c.securityContext.readOnlyRootFilesystem) && variables.c.securityContext.readOnlyRootFilesystem == true &&
+        (!has(variables.c.securityContext.runAsNonRoot) || variables.c.securityContext.runAsNonRoot == true) &&
+        (!has(variables.c.securityContext.runAsUser) || variables.c.securityContext.runAsUser != 0) &&
+        (!has(variables.c.securityContext.runAsGroup) || variables.c.securityContext.runAsGroup != 0) &&
+        has(variables.c.securityContext.capabilities) && has(variables.c.securityContext.capabilities.drop) &&
+        'ALL' in variables.c.securityContext.capabilities.drop &&
+        (!has(variables.c.securityContext.capabilities.add) || size(variables.c.securityContext.capabilities.add) == 0) &&
+        (!has(variables.c.securityContext.procMount) || variables.c.securityContext.procMount == 'Default') &&
+        (!has(variables.c.securityContext.seccompProfile) || variables.c.securityContext.seccompProfile.type == 'RuntimeDefault') &&
+        !has(variables.c.securityContext.seLinuxOptions) && !has(variables.c.securityContext.windowsOptions) &&
+        (!has(variables.c.securityContext.appArmorProfile) || variables.c.securityContext.appArmorProfile.type == 'RuntimeDefault')
+      message: "the container must not be privileged or escalate privileges, must have a read-only root filesystem, drop ALL capabilities and add none, and run as non-root"
+      reason: Forbidden
+    - expression: >-
+        has(variables.c.resources) && has(variables.c.resources.limits) && has(variables.c.resources.requests) &&
+        ['cpu', 'memory', 'ephemeral-storage'].all(r, r in variables.c.resources.limits) &&
+        variables.c.resources.limits.all(r, r in ['cpu', 'memory', 'ephemeral-storage']) &&
+        variables.c.resources.requests.all(r, r in ['cpu', 'memory', 'ephemeral-storage']) &&
+        [variables.c.resources.limits, variables.c.resources.requests].all(q,
+          (!('cpu' in q) || quantity(string(q['cpu'])).compareTo(quantity('{{ .Values.runner.resources.cpu }}')) <= 0) &&
+          (!('memory' in q) || quantity(string(q['memory'])).compareTo(quantity('{{ .Values.runner.resources.memory }}')) <= 0) &&
+          (!('ephemeral-storage' in q) || quantity(string(q['ephemeral-storage'])).compareTo(quantity('{{ .Values.runner.resources.scratch }}')) <= 0))
+      message: "cpu, memory and ephemeral-storage limits are required, and no request or limit may exceed cpu {{ .Values.runner.resources.cpu }}, memory {{ .Values.runner.resources.memory }}, ephemeral-storage {{ .Values.runner.resources.scratch }}"
+      reason: Forbidden
+    - expression: >-
+        variables.volumes.all(v,
+          (has(v.emptyDir) && (!has(v.emptyDir.medium) || v.emptyDir.medium == '') && has(v.emptyDir.sizeLimit) &&
+            quantity(string(v.emptyDir.sizeLimit)).compareTo(quantity('{{ .Values.runner.resources.scratch }}')) <= 0) ||
+          (variables.isExecution && v.name == 'snapshot' && has(v.persistentVolumeClaim) &&
+            v.persistentVolumeClaim.claimName == '{{ $full }}-data' &&
+            has(v.persistentVolumeClaim.readOnly) && v.persistentVolumeClaim.readOnly == true) ||
+          (variables.isExecution && v.name == 'secrets' && has(v.secret) && has(v.secret.secretName) &&
+            v.secret.secretName != '{{ include "gha-emergency.tokenSecret" . }}' &&
+            has(v.secret.items) && size(v.secret.items) > 0 &&
+            v.secret.items.all(i, i.path == i.key && (variables.snapshotPath + ':' + v.secret.secretName + ':' + i.key) in variables.grants)))
+      message: "volumes are limited to size-limited emptyDirs, the snapshot volume (read-only) and Secret keys that secretBindings give this snapshot: no hostPath, other Secrets, ConfigMaps, projected or any other volume"
+      reason: Forbidden
+    - expression: >-
+        variables.mounts.all(m,
+          !has(m.subPathExpr) && (!has(m.mountPropagation) || m.mountPropagation == 'None') &&
+          ((m.name == 'snapshot' && m.mountPath == '/snapshot' && has(m.readOnly) && m.readOnly == true &&
+              has(m.subPath) && m.subPath.matches('^snapshots/[0-9a-f]{64}$')) ||
+           (m.name == 'secrets' && m.mountPath == '/secrets' && has(m.readOnly) && m.readOnly == true && !has(m.subPath)) ||
+           (variables.volumes.exists(v, v.name == m.name && has(v.emptyDir)) && m.mountPath in ['/work', '/tmp'] && !has(m.subPath))))
+      message: "volume mounts are limited to /snapshot (read-only, one snapshot directory), /secrets (read-only), /work and /tmp"
+      reason: Forbidden
+    - expression: >-
+        !has(variables.c.envFrom) &&
+        variables.env.all(e, !has(e.valueFrom) &&
+          (e.name in (variables.isExecution ? {{ toJson $execEnv }} : {{ toJson $canaryEnv }}) ||
+           (!variables.isJob && e.name.startsWith('KUBERNETES_'))))
+      message: "environment variables are limited to the runner's own, with literal values: no Secret, ConfigMap or field references, and no envFrom"
+      reason: Forbidden
+    - expression: >-
+        variables.runnerLabelled
+          ? ('{{ include "gha-emergency.networkLabel" . }}' in variables.labels && variables.labels['{{ include "gha-emergency.networkLabel" . }}'] in {{ toJson $modes }})
+          : (variables.isCanary && variables.volumes.all(v, has(v.emptyDir)))
+      message: "pods must carry the runner labels its NetworkPolicies select, with network mode {{ join " or " $modes }}; only the network canary's control pod may go without them"
+      reason: Forbidden
+    - expression: >-
+        variables.pod.restartPolicy == 'Never' &&
+        !has(variables.pod.nodeName) && !has(variables.pod.runtimeClassName) && !has(variables.pod.resourceClaims) &&
+        (!variables.isJob || (!has(variables.pod.nodeSelector) && !has(variables.pod.priorityClassName))) &&
+        (!has(variables.pod.tolerations) || variables.pod.tolerations.all(t,
+          has(t.key) && t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
+          has(t.effect) && t.effect == 'NoExecute' && has(t.operator) && t.operator == 'Exists')) &&
+        (!has(variables.pod.hostAliases) || variables.pod.hostAliases.all(h, h.ip == '127.0.0.1')) &&
+        (!has(variables.pod.os) || variables.pod.os.name == 'linux')
+      message: "no restarts, node selection, tolerations (beyond the API server's defaults), runtime classes, priority classes or host aliases other than 127.0.0.1"
+      reason: Forbidden
+    - expression: "variables.jobLimits"
+      message: "one pod, one attempt (backoffLimit 0) and an activeDeadlineSeconds of at most {{ $deadline }}"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $policy }}
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $policy }}
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $ns }}

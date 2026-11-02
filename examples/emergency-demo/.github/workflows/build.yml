@@ -1,0 +1,50 @@
+name: Build (reusable)
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+    secrets:
+      signing-key:
+        required: true
+    outputs:
+      stamp:
+        description: Signed build stamp
+        value: ${{ jobs.compile.outputs.stamp }}
+      checksum:
+        description: Checksum of the packaged sources
+        value: ${{ jobs.package.outputs.checksum }}
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    outputs:
+      stamp: ${{ steps.stamp.outputs.stamp }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: stamp
+        name: Stamp build (local JavaScript action)
+        uses: ./.github/actions/stamp
+        with:
+          version: ${{ inputs.version }}
+          signing-key: ${{ secrets.signing-key }}
+      - name: Notify (external JavaScript action)
+        uses: demo-org/shared-actions/notify@v1
+        with:
+          message: Built ${{ inputs.version }} with stamp ${{ steps.stamp.outputs.stamp }}
+      - name: Compile (shell script)
+        run: bash scripts/build.sh "${{ inputs.version }}"
+
+  package:
+    needs: compile
+    runs-on: ubuntu-latest
+    outputs:
+      checksum: ${{ steps.sum.outputs.checksum }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: sum
+        name: Checksum sources (Python script)
+        run: python3 scripts/checksum.py src/app
+      - name: Verify (shell script)
+        run: bash scripts/verify.sh "${{ steps.sum.outputs.checksum }}" "${{ needs.compile.outputs.stamp }}"

@@ -14,7 +14,13 @@ export default defineConfig(({ command, isPreview }) => {
   // Fixture mode is compiled in for the dev server and unit tests, and for an explicitly requested test build.
   // Ordinary production builds and ordinary `vite preview` have no fixture code and no fixture routes.
   const fixtures = (command === "serve" && !isPreview) || testBuild;
+  // Development only: forward the emergency API to a running executor (e.g. a kubectl port-forward), so the dev or
+  // test-build server can prepare from fixtures and run on a real cluster (docs/EMERGENCY_EXECUTION.md). Unset: no proxy.
+  const emergencyApi = process.env.GHA_EMERGENCY_API_PROXY;
+  const proxy = emergencyApi ? { "/api/emergency": { target: emergencyApi, changeOrigin: true } } : undefined;
   return {
+    server: { proxy },
+    preview: { proxy },
     // Builds reference their assets and the log worker relative to the page and the main chunk, so one build serves
     // from a host's root or under any path prefix (deploy/ui/server.mjs). Routes live in the URL hash.
     base: command === "build" ? "./" : "/",
