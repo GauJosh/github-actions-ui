@@ -21,7 +21,7 @@ export type RunnerEvent =
   | { type: "step-end"; at: string; job: string; step: number; outcome: StepResult; conclusion: StepResult; exitCode: number | null; durationMs: number; outputs: Record<string, string>; reason?: string }
   | { type: "log"; at: string; job?: string; step?: number; stream: "stdout" | "stderr" | "runner"; text: string }
   /** Reported by workflow code (::error:: and the like): the workflow's claim, not the runner's finding. */
-  | { type: "annotation"; at: string; job?: string; step?: number; level: "error" | "warning" | "notice"; message: string; source?: "workflow" }
+  | { type: "annotation"; at: string; job?: string; step?: number; level: "error" | "warning" | "notice"; message: string; source?: "workflow" | "runner" }
   | { type: "execution-end"; at: string; result: StepResult; durationMs: number; outputs: Record<string, string>; reason?: string };
 
 export type StepView = { step: number; name: string; kind: string; detail?: string; status: "running" | StepResult; exitCode: number | null; durationMs?: number; outputs: Record<string, string>; reason?: string; logs: number[] };

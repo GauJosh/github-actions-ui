@@ -15,7 +15,7 @@
 import { randomBytes } from "node:crypto";
 import { CANARY_PREFIX } from "../../../src/emergency/events.ts";
 import type { CanaryRole, CanaryTarget } from "./job-spec.ts";
-import { buildCanaryJob, CANARY_CHECK_LABEL, canaryJobName, RUNNER_CONTAINER } from "./job-spec.ts";
+import { buildCanaryJob, CANARY_CHECK_LABEL, canaryJobName, RUNNER_CONTAINER, type RunnerIsolation } from "./job-spec.ts";
 import type { KubeApi, K8sJob } from "./kube.ts";
 
 export type ProbeResult = { name: string; host: string; port: number; reachable: boolean; detail: string };
@@ -35,6 +35,7 @@ export type NetworkCheckConfig = {
   runnerImage: string;
   runnerServiceAccount: string;
   executorPodLabels: Record<string, string>;
+  isolation: RunnerIsolation;
   externalTarget: { host: string; port: number };
   /** The Kubernetes API as pods see it (the executor's KUBERNETES_SERVICE_HOST and _PORT). */
   apiServer: { host: string; port: number };
@@ -60,7 +61,7 @@ export function createNetworkCheck(deps: { kube: KubeApi; config: NetworkCheckCo
   const fresh = () => current.checkedAt !== undefined && now().getTime() - Date.parse(current.checkedAt) < (current.state === "enforced" ? config.maxAgeMs : config.retryMs);
 
   async function runCanary(checkId: string, role: CanaryRole, targets: CanaryTarget[]): Promise<{ results?: ProbeResult[]; problem?: string }> {
-    const job = buildCanaryJob({ checkId, role, targets, namespace: config.namespace, runnerImage: config.runnerImage, serviceAccountName: config.runnerServiceAccount, executorPodLabels: config.executorPodLabels });
+    const job = buildCanaryJob({ checkId, role, targets, namespace: config.namespace, runnerImage: config.runnerImage, serviceAccountName: config.runnerServiceAccount, executorPodLabels: config.executorPodLabels, isolation: config.isolation });
     const name = canaryJobName(checkId, role);
     await kube.createJob(job);
     try {

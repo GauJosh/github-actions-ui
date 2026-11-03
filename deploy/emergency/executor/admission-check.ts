@@ -10,7 +10,7 @@
 // Only then is the policy "enforced". Anything else refuses executions. Dry runs need only the executor's existing
 // "create jobs" permission.
 import { randomBytes } from "node:crypto";
-import { buildCanaryJob } from "./job-spec.ts";
+import { buildCanaryJob, type RunnerIsolation } from "./job-spec.ts";
 import { KubeError, type KubeApi } from "./kube.ts";
 
 export type AdmissionState = "enforced" | "not-enforced" | "unverified";
@@ -21,6 +21,7 @@ export type AdmissionCheckConfig = {
   runnerImage: string;
   runnerServiceAccount: string;
   executorPodLabels: Record<string, string>;
+  isolation: RunnerIsolation;
   /** Name of the ValidatingAdmissionPolicy; its denials name it. */
   policyName: string;
   maxAgeMs: number;
@@ -31,7 +32,7 @@ export const admissionProbeName = (checkId: string, kind: "denied" | "accepted")
 
 /** The two dry-run Jobs: identical except for the hostPath volume the policy must refuse. */
 export function admissionProbes(config: AdmissionCheckConfig, checkId: string) {
-  const base = { checkId, role: "probe-isolated" as const, targets: [], namespace: config.namespace, runnerImage: config.runnerImage, serviceAccountName: config.runnerServiceAccount, executorPodLabels: config.executorPodLabels };
+  const base = { checkId, role: "probe-isolated" as const, targets: [], namespace: config.namespace, runnerImage: config.runnerImage, serviceAccountName: config.runnerServiceAccount, executorPodLabels: config.executorPodLabels, isolation: config.isolation };
   const accepted = buildCanaryJob(base);
   accepted.metadata.name = admissionProbeName(checkId, "accepted");
   const denied = buildCanaryJob(base);

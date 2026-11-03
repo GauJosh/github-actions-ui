@@ -21,6 +21,27 @@ export const APP_CSP = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+/**
+ * The CSP the executor origin serves (security review M5). The executor must never hold the GitHub token, so its
+ * page may talk only to its own same-origin API: connect-src is 'self' with no api.github.com or blob storage, so
+ * even injected script cannot reach GitHub or exfiltrate to Azure Blob. This is defense in depth — a compromised
+ * executor controls its own headers — on top of the real control, which is that the token is only ever entered on
+ * the separate trusted origin the executor cannot modify.
+ */
+export const EXECUTOR_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "worker-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
 /** The log worker holds log text and must never make network requests. */
 export const WORKER_CSP = "default-src 'none'; script-src 'self'; connect-src 'none'";
 

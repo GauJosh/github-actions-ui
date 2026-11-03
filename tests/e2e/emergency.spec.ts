@@ -157,6 +157,52 @@ test("security review H2 in the UI: what each role sees; administrators manage o
   expect(mock.breakGlass).toEqual({ account: "recovery-1", credential: "credential-from-the-cluster-admin", reason: "IdP outage INC-1234" });
 });
 
+test("security review M5: the executor console offers no GitHub sign-in and never sends the GitHub token", async ({ page }) => {
+  // The executor origin declares role "executor" (injected into index.html by the executor's server).
+  await page.addInitScript(() => ((window as unknown as { __GHA_UI__: unknown }).__GHA_UI__ = { role: "executor", trustedUiUrl: "https://gha-ui.example" }));
+  const github = await forbidGitHub(page);
+  await mockExecutor(page, { bound: true, network: "enforced", user: ALICE });
+  await page.goto("/?mode=fixtures");
+  // No investigation app, no top-bar GitHub affordances: the emergency console is the whole page.
+  await expect(page.getByTestId("emergency-nav")).toHaveCount(0);
+  await page.getByTestId("sign-in-oidc").click();
+  await expect(page.getByTestId("signed-in-user")).toContainText("alice");
+  // Preparation (which needs the GitHub token) is not offered here; the console points to the trusted UI and imports.
+  await expect(page.getByTestId("prepare-link")).toHaveCount(0);
+  await expect(page.getByTestId("prepare-elsewhere")).toContainText("https://gha-ui.example");
+  await expect(page.getByTestId("import-snapshot")).toBeVisible();
+  // There is no GitHub token entry anywhere, and GitHub was never contacted.
+  await expect(page.getByTestId("operator-token")).toHaveCount(0);
+  expect(github).toEqual([]);
+});
+
+test("security review M5: the trusted origin keeps GitHub sign-in and can export a prepared snapshot to a file", async ({ page }) => {
+  await page.addInitScript(() => ((window as unknown as { __GHA_UI__: unknown }).__GHA_UI__ = { role: "trusted", trustedUiUrl: "" }));
+  await forbidGitHub(page);
+  const mock = await mockExecutor(page, { bound: true, network: "enforced", user: ALICE });
+  await page.goto("/?mode=fixtures");
+  await page.getByTestId("emergency-nav").click();
+  await page.getByTestId("sign-in-oidc").click();
+  await expect(page.getByTestId("signed-in-user")).toContainText("alice");
+  // Prepare up to the resolved bundle (do not create it yet), so the export button is on screen.
+  await page.getByTestId("prepare-link").click();
+  await page.getByTestId("prepare-repo").fill("emergency-demo/release-pipeline");
+  await page.getByTestId("prepare-ref").fill("main");
+  await page.getByTestId("load-workflows").click();
+  await page.getByLabel(".github/workflows/release.yml").check();
+  await page.getByLabel(".github/workflows/build.yml").uncheck();
+  await page.getByTestId("prepare-name").fill("release demo");
+  await page.getByTestId("resolve").click();
+  await expect(page.getByTestId("prepared").getByTestId("validation-ok")).toBeVisible();
+  // The prepared bundle can be downloaded to carry to the executor console (no executor involved in export).
+  const download = page.waitForEvent("download");
+  await page.getByTestId("export-snapshot").click();
+  const file = await download;
+  expect(await file.suggestedFilename()).toMatch(/\.gha-snapshot\.json$/);
+  // Export does not upload; the snapshot is stored only when the operator creates it.
+  expect(mock.execution).toBeUndefined();
+});
+
 /**
  * The executor's API, answered by page.route: sign-in (auth/login stands for the identity provider's round trip), the
  * session, snapshots checked with the real server-side validation, an execution that waits for approval, and

@@ -8,7 +8,9 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { checkBasePath, createHandler, loadHeaders, loadSite } from "../../ui/server.mjs";
 import { createAdmissionCheck } from "./admission-check.ts";
-import { createApi, MAX_SNAPSHOT_BODY, type ApiRequest } from "./api.ts";
+import { createApi, MAX_SMALL_BODY, MAX_SNAPSHOT_BODY } from "./api.ts";
+import { createRequestListener } from "./http.ts";
+import { placement, type RunnerIsolation } from "./job-spec.ts";
 import { createAuditLog } from "./audit.ts";
 import { parseAuthConfig } from "./auth/config.ts";
 import { createOidcProvider } from "./auth/oidc.ts";
@@ -28,7 +30,15 @@ const app = "/app";
 const basePath = checkBasePath(process.env.GHA_UI_BASE_PATH ?? "/");
 const site = loadSite(process.env.GHA_UI_STATIC_ROOT ?? join(app, "dist"));
 const headers = loadHeaders(process.env.GHA_UI_HEADERS_FILE ?? join(app, "security-headers.json"));
-const staticHandler = createHandler({ site, headers, basePath });
+// Security review M5: the executor must never serve the GitHub-token UI. It serves only the OIDC execution console
+// ("executor" role), or, for single-origin local dev, the whole app ("bundled", explicitly insecure). It can never be
+// the trusted token origin. In secure ("executor") mode a trusted-UI URL is required, so the console can point users
+// to where the GitHub token is entered. Fails closed on a missing or invalid configuration.
+const uiRole = process.env.GHA_UI_ROLE ?? "executor";
+if (uiRole !== "executor" && uiRole !== "bundled") throw new Error(`GHA_UI_ROLE must be "executor" (secure) or "bundled" (local dev); the executor can't be the trusted token origin (got ${JSON.stringify(uiRole)})`);
+const trustedUiUrl = process.env.GHA_UI_TRUSTED_URL ?? "";
+if (uiRole === "executor" && !trustedUiUrl) throw new Error("GHA_UI_TRUSTED_URL is required in secure mode (GHA_UI_ROLE=executor): the trusted origin where the GitHub token is entered (security review M5)");
+const staticHandler = createHandler({ site, headers, basePath, ui: { role: uiRole, trustedUiUrl } });
 
 // Security review H2: who may sign in, how, and which executions need approval. Invalid configuration stops here.
 const authConfig = parseAuthConfig(readFileSync(env("GHA_EMERGENCY_AUTH_FILE", "/etc/gha-emergency-auth/auth.json"), "utf8"));
@@ -64,6 +74,11 @@ const runnerServiceAccount = env("GHA_EMERGENCY_RUNNER_SERVICE_ACCOUNT");
 const operatorSecret = env("GHA_EMERGENCY_OPERATOR_SECRET");
 const allowEgress = process.env.GHA_EMERGENCY_ALLOW_EGRESS === "true";
 const service = hostPort(env("GHA_EMERGENCY_SERVICE"));
+// Security review M4: how runner pods are isolated from the executor. Required and validated here; the executor fails
+// to start (fail closed) if it is missing or inconsistent with execution storage, rather than co-locating silently.
+const isolation = JSON.parse(env("GHA_EMERGENCY_RUNNER_ISOLATION")) as RunnerIsolation;
+placement(isolation, executorPodLabels, true); // throws RunnerIsolationError on an invalid config for executions
+console.log(JSON.stringify({ audit: true, action: "runner-isolation", mode: isolation.mode }));
 const network = createNetworkCheck({
   kube,
   log: (e) => console.log(JSON.stringify({ audit: true, at: new Date().toISOString(), ...e })),
@@ -72,6 +87,7 @@ const network = createNetworkCheck({
     runnerImage,
     runnerServiceAccount,
     executorPodLabels,
+    isolation,
     externalTarget: hostPort(env("GHA_EMERGENCY_CANARY_EXTERNAL", "1.1.1.1:443")),
     apiServer: { host: env("KUBERNETES_SERVICE_HOST"), port: Number(env("KUBERNETES_SERVICE_PORT", "443")) },
     metadataTarget: hostPort(env("GHA_EMERGENCY_CANARY_METADATA", "169.254.169.254:80")),
@@ -87,7 +103,7 @@ const network = createNetworkCheck({
 const admission = createAdmissionCheck({
   kube,
   log: (e) => console.log(JSON.stringify({ audit: true, at: new Date().toISOString(), ...e })),
-  config: { namespace, runnerImage, runnerServiceAccount, executorPodLabels, policyName: env("GHA_EMERGENCY_ADMISSION_POLICY"), maxAgeMs: 900_000, retryMs: 30_000 },
+  config: { namespace, runnerImage, runnerServiceAccount, executorPodLabels, isolation, policyName: env("GHA_EMERGENCY_ADMISSION_POLICY"), maxAgeMs: 900_000, retryMs: 30_000 },
 });
 const bindingsFile = env("GHA_EMERGENCY_BINDINGS_FILE", "/etc/gha-emergency-bindings/bindings.json");
 const api = createApi({
@@ -105,6 +121,7 @@ const api = createApi({
     pvcName: env("GHA_EMERGENCY_PVC"),
     runnerServiceAccount,
     executorPodLabels,
+    isolation,
     resources: { cpu: env("GHA_EMERGENCY_RUNNER_CPU", "1"), memory: env("GHA_EMERGENCY_RUNNER_MEMORY", "1Gi"), scratch: env("GHA_EMERGENCY_RUNNER_SCRATCH", "2Gi") },
     maxMinutes: Number(env("GHA_EMERGENCY_MAX_MINUTES", "60")),
     maxConcurrent: Number(env("GHA_EMERGENCY_MAX_CONCURRENT", "2")),
@@ -128,42 +145,23 @@ if (removed.length) console.log(JSON.stringify({ audit: true, action: "snapshots
 const apiPrefix = `${basePath}api/emergency/`;
 const API_HEADERS = { ...headers.common, "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'", "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
 
-const server = createServer((req, res) => {
-  const url = req.url ?? "/";
-  const path = url.split("?")[0]!;
-  if (!path.startsWith(apiPrefix)) {
-    const r = staticHandler(req.method, url);
-    res.writeHead(r.status, r.headers);
-    res.end(r.body);
-    return;
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  let tooLarge = false;
-  req.on("data", (c: Buffer) => {
-    size += c.length;
-    if (size > MAX_SNAPSHOT_BODY) tooLarge = true;
-    else chunks.push(c);
-  });
-  req.on("end", async () => {
-    const send = (status: number, body: unknown, extra: Record<string, string | string[]> = {}) => {
-      const data = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
-      res.writeHead(status, { ...API_HEADERS, ...extra, "Content-Length": String(data.length) });
-      res.end(data);
-    };
-    if (tooLarge) return send(413, { error: "Request body too large" });
-    const single = (v: string | string[] | undefined) => (Array.isArray(v) ? v.join(", ") : v);
-    const request: ApiRequest = {
-      method: req.method ?? "GET",
-      path: path.slice(apiPrefix.length),
-      query: new URLSearchParams(url.includes("?") ? url.slice(url.indexOf("?") + 1) : ""),
-      headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), single(v)])),
-      body: Buffer.concat(chunks),
-    };
-    const r = await api(request);
-    send(r.status, r.body, r.headers);
-  });
-});
+// Security review M3: authenticate and size-limit before buffering a body (deploy/emergency/executor/http.ts).
+const server = createServer(
+  createRequestListener({
+    apiPrefix,
+    staticHandler,
+    api,
+    hasSession: (token) => authStore.principal(token) !== undefined,
+    apiHeaders: API_HEADERS,
+    limits: {
+      maxUploadBody: Number(env("GHA_EMERGENCY_MAX_UPLOAD_BYTES", String(MAX_SNAPSHOT_BODY))),
+      maxSmallBody: Number(env("GHA_EMERGENCY_MAX_REQUEST_BYTES", String(MAX_SMALL_BODY))),
+      maxConcurrentUploads: Number(env("GHA_EMERGENCY_MAX_UPLOADS", "2")),
+    },
+  }),
+);
+// Bound total connections so many idle or slow clients can't exhaust the executor (M3).
+server.maxConnections = Number(env("GHA_EMERGENCY_MAX_CONNECTIONS", "64"));
 server.requestTimeout = 120_000;
 server.headersTimeout = 15_000;
 server.listen(Number(process.env.PORT ?? 8080), () => console.log(`gha-emergency-executor: UI and API under ${basePath} on port ${process.env.PORT ?? 8080}, namespace ${namespace}`));

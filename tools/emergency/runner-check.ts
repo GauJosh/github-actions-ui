@@ -151,8 +151,120 @@ export async function runChecks(repoRoot: string): Promise<Scenario[]> {
     check(s, verify?.exitCode === 3 && verify.status === "failure", `exit code 3 recorded (got ${verify?.exitCode})`);
     scenarios.push(s);
   }
+  {
+    // Security review M1: workflow-controlled values (a step's output, a dispatch input) reach later scripts. They
+    // must stay data, never shell syntax. The value is inert: if it were ever executed it would print M1_EXEC on its
+    // own line; as data it is only ever printed inside a labelled line. Also: deprecated ::set-output:: is ignored.
+    const repos = demoRepos(repoRoot);
+    repos[DEMO_REPO]!.files[".github/workflows/release.yml"] = M1_WORKFLOW;
+    const r = await execute(repoRoot, repos, { inputs: { version: M1_INPUT } });
+    const s: Scenario = { name: "workflow-controlled values stay data in later scripts (review M1)", ...r, failures: [] };
+    const lines = s.view.logs.map((l) => l.text);
+    const steps = s.view.jobs[0]?.steps ?? [];
+    check(s, s.result === "success", `result success (got ${s.result}: ${s.view.reason ?? ""})`);
+    // The inert payload never executed: these markers only appear on their own line if a value became a command.
+    check(s, !lines.includes("M1_EXEC"), `shell payload never executed (unexpected lines: ${JSON.stringify(lines.filter((l) => l === "M1_EXEC"))})`);
+    check(s, !lines.includes("M1_INPUT_EXEC"), "dispatch-input payload never executed");
+    // The value is printed literally as data in every shell quoting context, and from Python via env:.
+    for (const prefix of ["dq", "sq", "uq", "py"]) check(s, lines.includes(`${prefix}: ${M1_VALUE}`), `${prefix} printed the value literally (got ${JSON.stringify(lines.filter((l) => l.startsWith(`${prefix}: `)))})`);
+    check(s, lines.includes(`inp: ${M1_INPUT}`), `dispatch input printed literally (got ${JSON.stringify(lines.filter((l) => l.startsWith("inp: ")))})`);
+    // Deprecated ::set-output:: on stdout set no output and is only visible as log data, with a runner warning.
+    const tool = steps.find((x) => x.name === "tool");
+    check(s, tool?.outputs.v === M1_VALUE, `GITHUB_OUTPUT still works (got ${JSON.stringify(tool?.outputs)})`);
+    check(s, tool?.outputs.forged === undefined, "::set-output:: on stdout set no output");
+    check(s, lines.some((l) => l.includes("::set-output name=forged")), "the ignored ::set-output:: line is kept as log data");
+    check(s, s.view.annotations.some((a) => a.source === "runner" && /set-output.*deprecated|deprecated.*ignored/.test(a.message)), `a runner warning records the ignored command (got ${JSON.stringify(s.view.annotations)})`);
+    scenarios.push(s);
+  }
+  {
+    // Security review M2: a workflow re-encodes its secret to dodge exact-match masking. The runner now masks the
+    // value and its standard and URL-safe Base64 forms everywhere it emits: stdout, stderr, step outputs, annotations.
+    const repos = demoRepos(repoRoot);
+    repos[DEMO_REPO]!.files[".github/workflows/release.yml"] = M2_WORKFLOW;
+    const r = await execute(repoRoot, repos, { secret: SECRET });
+    const s: Scenario = { name: "secret and its Base64 encodings are masked everywhere (review M2)", ...r, failures: [] };
+    const std = Buffer.from(SECRET, "utf8").toString("base64");
+    const url = std.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const everywhere = JSON.stringify(s.events);
+    check(s, s.result === "success", `result success (got ${s.result}: ${s.view.reason ?? ""})`);
+    for (const [what, form] of [["raw value", SECRET], ["standard base64", std], ["url-safe base64", url]] as const) check(s, !everywhere.includes(form), `${what} never appears in any event`);
+    const lines = s.view.logs.map((l) => l.text);
+    check(s, lines.includes("BEGIN") && lines.includes("END"), "non-secret output stays readable");
+    check(s, lines.some((l) => l === "raw: ***") && lines.some((l) => l === "std: ***") && lines.some((l) => l === "url: ***"), `stdout masked (got ${JSON.stringify(lines.filter((l) => /^(raw|std|url):/.test(l)))})`);
+    check(s, s.view.logs.some((l) => l.stream === "stderr" && l.text === "err: ***"), "stderr masked");
+    const enc = s.view.jobs[0]?.steps.find((x) => x.name === "encode");
+    check(s, enc?.outputs.leaked === "***" && enc.outputs.stdb64 === "***", `step outputs masked (got ${JSON.stringify(enc?.outputs)})`);
+    check(s, s.view.annotations.some((a) => a.message === "annotated ***"), `annotation masked (got ${JSON.stringify(s.view.annotations.map((a) => a.message))})`);
+    scenarios.push(s);
+  }
   return scenarios;
 }
+
+// Security review M2: the step echoes its secret raw and Base64-encoded, to stdout, stderr, a step output and an
+// annotation. BEGIN/END frame the non-secret output that must stay readable. The secret is a harmless test value.
+const M2_WORKFLOW = `on:
+  workflow_dispatch: {}
+jobs:
+  leak:
+    runs-on: ubuntu-latest
+    steps:
+      - id: enc
+        name: encode
+        env:
+          KEY: \${{ secrets.DEMO_SIGNING_KEY }}
+        run: |
+          echo BEGIN
+          echo "raw: $KEY"
+          printf 'std: %s\\n' "$(printf '%s' "$KEY" | base64 -w0)"
+          printf 'url: %s\\n' "$(printf '%s' "$KEY" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+          printf 'err: %s\\n' "$(printf '%s' "$KEY" | base64 -w0)" 1>&2
+          {
+            echo "leaked=$KEY"
+            echo "stdb64=$(printf '%s' "$KEY" | base64 -w0)"
+          } >> "$GITHUB_OUTPUT"
+          echo "::warning::annotated $KEY"
+          echo END
+`;
+
+// Security review M1: an inert value made of the shell metacharacters an attacker would use. "M1_EXEC" is printed
+// only if the value is ever evaluated as a command; as data the whole string is printed inside a labelled line.
+const M1_VALUE = `"; echo M1_EXEC; echo DONE "`;
+const M1_INPUT = `"; echo M1_INPUT_EXEC; echo DONE "`;
+const M1_WORKFLOW = `on:
+  workflow_dispatch:
+    inputs:
+      version:
+        type: string
+        required: true
+jobs:
+  m1:
+    runs-on: ubuntu-latest
+    steps:
+      - id: tool
+        name: tool
+        run: |
+          printf '%s\\n' 'v=${M1_VALUE}' >> "$GITHUB_OUTPUT"
+          echo '::set-output name=forged::M1_FORGED'
+      - name: double quoted
+        run: |
+          echo "dq: \${{ steps.tool.outputs.v }}"
+      - name: single quoted
+        run: |
+          echo 'sq: \${{ steps.tool.outputs.v }}'
+      - name: unquoted
+        run: |
+          echo uq: \${{ steps.tool.outputs.v }}
+      - name: dispatch input
+        run: |
+          echo "inp: \${{ inputs.version }}"
+      - name: python via env
+        shell: python
+        env:
+          V: \${{ steps.tool.outputs.v }}
+        run: |
+          import os
+          print("py: " + os.environ["V"])
+`;
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const root = fileURLToPath(new URL("../..", import.meta.url));

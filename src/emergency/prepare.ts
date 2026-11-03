@@ -3,6 +3,7 @@
 // can reproduce, and packages every file it needs. Runs while GitHub is available, through a SourceReader (the
 // browser's read-only GitHub client, or the fixture API). Pure apart from the reader.
 import { analyse, ExpressionError, FUNCTIONS, parseCondition, parseExpression, templateExpressions } from "./expressions.ts";
+import { checkRunScript } from "./script-substitution.ts";
 import type { ActionDef, Diagnostic, InputSpec, JobDef, StepDef, WorkflowDef } from "./model.ts";
 import { DefinitionError, isCheckout, isWorkflowPath, normalizePath, parseAction, parseUses, parseWorkflow } from "./model.ts";
 import type { ActionEntry, FileEntry, GraphJob, GraphStep, Manifest, Requirement, RootEntry, RootId, WorkflowEntry } from "./snapshot.ts";
@@ -381,6 +382,12 @@ export async function prepareSnapshot(reader: SourceReader, opts: PrepareOptions
       checkText(step.run, where, scope);
       if (composite && !step.shell) diag("error", "shell", "Composite run steps must set shell:", where);
       const shell = checkShell(step.shell, where);
+      // Security review M1: a ${{ }} value is passed to the script as an environment variable, not pasted into it.
+      const language = shell.startsWith("python") ? "python" : "shell";
+      const subst = checkRunScript(step.run, language);
+      if (subst.reject) diag("error", "run-expression", `This run: step cannot run safely: ${subst.reject}`, where);
+      else if (subst.count) diag("info", "run-expression", `${subst.count} \${{ }} expression${subst.count > 1 ? "s" : ""} in run: are passed as environment variables and used as data, not inserted into the script text (security review M1)`, where);
+      if (/^::(set-output|save-state)\b/m.test(step.run)) diag("warning", "deprecated-command", "::set-output:: / ::save-state:: on stdout is deprecated by GitHub and ignored by the runner; write to the $GITHUB_OUTPUT or $GITHUB_STATE file", where);
       return { index: step.index, label: step.name ?? step.id ?? step.run.split("\n")[0]!.slice(0, 60), kind: "run", shell, scripts: scanRun(step.run, step.workingDirectory, where, tree) };
     }
     if (step.uses) return resolveStepAction(step, where, depth);

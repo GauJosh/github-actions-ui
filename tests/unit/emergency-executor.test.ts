@@ -11,7 +11,7 @@ import { createOidcProvider } from "../../deploy/emergency/executor/auth/oidc.ts
 import type { Role } from "../../deploy/emergency/executor/auth/roles.ts";
 import { createAuthStore, oidcUserId } from "../../deploy/emergency/executor/auth/store.ts";
 import { createBindingState, parseBindings, type SecretBinding } from "../../deploy/emergency/executor/bindings.ts";
-import { buildCanaryJob, buildJob, GITHUB_HOSTS, NETWORK_LABEL, RUNNER_NODE, RUNNER_POD_LABELS, type CanaryTarget } from "../../deploy/emergency/executor/job-spec.ts";
+import { buildCanaryJob, buildJob, GITHUB_HOSTS, NETWORK_LABEL, placement, RUNNER_NODE, RUNNER_POD_LABELS, RunnerIsolationError, type CanaryTarget, type RunnerIsolation } from "../../deploy/emergency/executor/job-spec.ts";
 import { KubeError, type K8sJob, type K8sPod, type KubeApi } from "../../deploy/emergency/executor/kube.ts";
 import { createNetworkCheck, type NetworkCheck, type NetworkChecker } from "../../deploy/emergency/executor/network-check.ts";
 import { createStore } from "../../deploy/emergency/executor/store.ts";
@@ -181,6 +181,7 @@ async function setup(opts: SetupOptions = {}) {
       pvcName: "gha-emergency-data",
       runnerServiceAccount: "gha-emergency-runner",
       executorPodLabels: { "app.kubernetes.io/name": "gha-emergency-executor" },
+      isolation: { mode: "colocated" as const },
       resources: { cpu: "1", memory: "1Gi", scratch: "2Gi" },
       maxMinutes: 30,
       maxConcurrent: opts.maxConcurrent ?? 2,
@@ -567,7 +568,7 @@ describe("security review H4: admission enforcement gate", () => {
 });
 
 const POLICY = "gha-emergency-runner-jobs.gha-emergency";
-const admissionConfig = { namespace: "gha-emergency", runnerImage: `runner@sha256:${"a".repeat(64)}`, runnerServiceAccount: "gha-emergency-runner", executorPodLabels: { app: "executor" }, policyName: POLICY, maxAgeMs: 900_000, retryMs: 30_000 };
+const admissionConfig = { namespace: "gha-emergency", runnerImage: `runner@sha256:${"a".repeat(64)}`, runnerServiceAccount: "gha-emergency-runner", executorPodLabels: { app: "executor" }, isolation: { mode: "colocated" as const }, policyName: POLICY, maxAgeMs: 900_000, retryMs: 30_000 };
 const hasHostPath = (job: object) => ((job as any).spec.template.spec.volumes as any[]).some((v) => v.hostPath);
 
 /** An API server that answers dry runs as scripted; every real create is recorded (there must be none). */
@@ -696,6 +697,7 @@ function canaryCluster(scenario: (role: string, target: CanaryTarget) => boolean
       runnerImage: "runner:test",
       runnerServiceAccount: "runner",
       executorPodLabels: { app: "executor" },
+      isolation: { mode: "colocated" as const },
       externalTarget: { host: "1.1.1.1", port: 443 },
       apiServer: { host: "10.96.0.1", port: 443 },
       metadataTarget: { host: "169.254.169.254", port: 80 },
@@ -935,6 +937,7 @@ const jobInput = {
   snapshotSubPath: `snapshots/${"a".repeat(64)}`,
   serviceAccountName: "runner",
   executorPodLabels: { app: "executor" },
+  isolation: { mode: "colocated" as const },
   resources: { cpu: "500m", memory: "512Mi", scratch: "1Gi" },
   maxMinutes: 20,
   ttlSecondsAfterFinished: 600,
@@ -977,7 +980,7 @@ describe("runner Job specification", () => {
   });
 
   it("canary Jobs are short-lived and as locked down as executions", () => {
-    const canary = buildCanaryJob({ checkId: "abcd1234", role: "probe-isolated", targets: [], namespace: "ns", runnerImage: "img", serviceAccountName: "runner", executorPodLabels: { app: "executor" } });
+    const canary = buildCanaryJob({ checkId: "abcd1234", role: "probe-isolated", targets: [], namespace: "ns", runnerImage: "img", serviceAccountName: "runner", executorPodLabels: { app: "executor" }, isolation: { mode: "colocated" as const } });
     expect(canary.spec).toMatchObject({ backoffLimit: 0, activeDeadlineSeconds: 120, ttlSecondsAfterFinished: 300 });
     expect(canary.spec.template.spec.automountServiceAccountToken).toBe(false);
     expect(canary.spec.template.spec.containers[0]!.securityContext.readOnlyRootFilesystem).toBe(true);
@@ -1385,5 +1388,56 @@ describe("security review H2: execution approval", () => {
     expect(req.execution).toMatchObject({ state: "awaiting-approval", initiatedBy: { id: "bg-recovery-1" } });
     expect((await as(operator, "POST", `executions/${req.execution.id}/approve`, { decision: "approve", requestDigest: req.execution.approval.requestDigest })).status).toBe(403);
     expect((await as(approver, "POST", `executions/${req.execution.id}/approve`, { decision: "approve", requestDigest: req.execution.approval.requestDigest })).status).toBe(201);
+  });
+});
+
+// Security review M4: runner pods are isolated from the trusted executor by an explicit, enforced mode. These tests
+// prove the Job-spec placement and the fail-closed behaviour. They do NOT prove resistance to a node compromise:
+// node-level isolation depends on the cluster actually honouring the node pool, taints and RuntimeClass.
+describe("security review M4: runner isolation placement", () => {
+  const labels = { app: "executor" };
+  const runnerJob = (isolation: RunnerIsolation) => buildJob({ ...jobInput, isolation });
+
+  it("colocated: pins the runner to the executor's node (shared ReadWriteOnce volume)", () => {
+    const pod = runnerJob({ mode: "colocated" }).spec.template.spec as any;
+    expect(pod.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels).toEqual(labels);
+    expect(pod.affinity.podAntiAffinity).toBeUndefined();
+    expect(pod.runtimeClassName).toBeUndefined();
+  });
+
+  it("sandbox: co-located but under a sandboxed RuntimeClass", () => {
+    const pod = runnerJob({ mode: "sandbox", runtimeClass: "gvisor" }).spec.template.spec as any;
+    expect(pod.runtimeClassName).toBe("gvisor");
+    expect(pod.affinity.podAffinity).toBeDefined();
+    expect(() => runnerJob({ mode: "sandbox" } as RunnerIsolation)).toThrow(RunnerIsolationError);
+  });
+
+  it("node: executions refuse node mode, because the shared RWO volume cannot span nodes (fail closed)", () => {
+    expect(() => runnerJob({ mode: "node", nodeSelector: { pool: "runners" } })).toThrow(/ReadWriteMany|cannot be used/);
+  });
+
+  it("node: a pod that does not mount the shared volume is scheduled off the executor's node", () => {
+    const place = placement({ mode: "node", nodeSelector: { pool: "runners" }, tolerations: [{ key: "runners", operator: "Exists", effect: "NoSchedule" }], runtimeClass: "gvisor" }, labels, false) as any;
+    expect(place.nodeSelector).toEqual({ pool: "runners" });
+    expect(place.tolerations).toHaveLength(1);
+    expect(place.runtimeClassName).toBe("gvisor");
+    expect(place.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels).toEqual(labels);
+    expect(place.affinity.podAffinity).toBeUndefined();
+    expect(() => placement({ mode: "node", nodeSelector: {} }, labels, false)).toThrow(/nodeSelector/);
+  });
+
+  it("fails closed when isolation is missing or unknown", () => {
+    expect(() => placement(undefined, labels, true)).toThrow(RunnerIsolationError);
+    expect(() => placement({ mode: "bogus" } as unknown as RunnerIsolation, labels, true)).toThrow(/Unknown runner isolation mode/);
+    expect(() => buildJob({ ...jobInput, isolation: undefined as unknown as RunnerIsolation })).toThrow(RunnerIsolationError);
+  });
+
+  it("canary probes mirror the execution placement; the control pod stays co-located", () => {
+    const probe = buildCanaryJob({ checkId: "c", role: "probe-isolated", targets: [], namespace: "ns", runnerImage: "img", serviceAccountName: "runner", executorPodLabels: labels, isolation: { mode: "sandbox", runtimeClass: "gvisor" } });
+    expect((probe.spec.template.spec as any).runtimeClassName).toBe("gvisor");
+    const control = buildCanaryJob({ checkId: "c", role: "control", targets: [], namespace: "ns", runnerImage: "img", serviceAccountName: "runner", executorPodLabels: labels, isolation: { mode: "node", nodeSelector: { pool: "runners" } } });
+    // The control pod proves the network works from an ordinary node: it co-locates and ignores node mode.
+    expect((control.spec.template.spec as any).affinity.podAffinity).toBeDefined();
+    expect((control.spec.template.spec as any).nodeSelector).toBeUndefined();
   });
 });

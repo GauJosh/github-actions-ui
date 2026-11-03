@@ -42,3 +42,23 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- define "gha-emergency.networkLabel" -}}
 gha-emergency.github-actions-ui/network
 {{- end }}
+
+{{/*
+Runner isolation (security review M4), validated here and passed to the executor as GHA_EMERGENCY_RUNNER_ISOLATION;
+the admission policy pins the same placement. Fails the install (fail closed) on an invalid or unsupported mode.
+*/}}
+{{- define "gha-emergency.runnerIsolation" -}}
+{{- $i := .Values.runner.isolation | default (dict "mode" "colocated") }}
+{{- $mode := $i.mode | default "colocated" }}
+{{- if not (has $mode (list "colocated" "sandbox" "node")) }}{{ fail (printf "runner.isolation.mode must be colocated, sandbox or node (got %q)" $mode) }}{{ end }}
+{{- if and (eq $mode "sandbox") (not $i.runtimeClass) }}{{ fail "runner.isolation.mode \"sandbox\" needs runner.isolation.runtimeClass (a sandboxed RuntimeClass such as gvisor or kata)" }}{{ end }}
+{{- if eq $mode "node" }}
+{{- if not $i.nodeSelector }}{{ fail "runner.isolation.mode \"node\" needs runner.isolation.nodeSelector for the runner node pool" }}{{ end }}
+{{- fail "runner.isolation.mode \"node\" needs snapshot storage reachable from another node (ReadWriteMany), which this chart does not configure. Use mode: sandbox, or provide cross-node storage first (security review M4)." }}
+{{- end }}
+{{- $out := dict "mode" $mode }}
+{{- if and $i.runtimeClass (ne $mode "colocated") }}{{ $_ := set $out "runtimeClass" $i.runtimeClass }}{{ end }}
+{{- if and (eq $mode "node") $i.nodeSelector }}{{ $_ := set $out "nodeSelector" $i.nodeSelector }}{{ end }}
+{{- if and (eq $mode "node") $i.tolerations }}{{ $_ := set $out "tolerations" $i.tolerations }}{{ end }}
+{{- $out | toJson }}
+{{- end }}

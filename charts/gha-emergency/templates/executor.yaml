@@ -49,6 +49,18 @@ spec:
             - name: GHA_UI_BASE_PATH
               value: {{ . | quote }}
             {{- end }}
+            {{- /* Security review M5: the executor serves only the execution console, never the GitHub-token UI. */}}
+            {{- if eq .Values.ui.mode "bundled" }}
+            - name: GHA_UI_ROLE
+              value: bundled
+            {{- else }}
+            {{- if ne .Values.ui.mode "executor" }}{{ fail "ui.mode must be \"executor\" (secure) or \"bundled\" (local dev)" }}{{ end }}
+            {{- if not .Values.ui.trustedUiUrl }}{{ fail "ui.trustedUiUrl is required in secure mode (ui.mode=executor): the separate trusted origin where users enter their GitHub token and prepare snapshots (security review M5)" }}{{ end }}
+            - name: GHA_UI_ROLE
+              value: executor
+            - name: GHA_UI_TRUSTED_URL
+              value: {{ .Values.ui.trustedUiUrl | quote }}
+            {{- end }}
             - name: GHA_EMERGENCY_DATA_DIR
               value: /data
             # Security review H2: sign-in, sessions and approval (auth.yaml).
@@ -65,6 +77,9 @@ spec:
               value: {{ include "gha-emergency.fullname" . }}-runner
             - name: GHA_EMERGENCY_EXECUTOR_POD_LABELS
               value: {{ include "gha-emergency.executorSelector" . | fromYaml | toJson | quote }}
+            # Security review M4: how runner pods are isolated from the executor; the executor fails closed without it.
+            - name: GHA_EMERGENCY_RUNNER_ISOLATION
+              value: {{ include "gha-emergency.runnerIsolation" . | quote }}
             - name: GHA_EMERGENCY_RUNNER_CPU
               value: {{ .Values.runner.resources.cpu | quote }}
             - name: GHA_EMERGENCY_RUNNER_MEMORY

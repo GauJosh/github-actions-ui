@@ -8,7 +8,7 @@ import { build } from "vite";
 import { afterAll, describe, expect, it } from "vitest";
 import { checkBasePath, createHandler, loadHeaders, loadSite } from "../../deploy/ui/server.mjs";
 import { serverHeaders } from "../../deploy/ui/write-security-headers.ts";
-import { APP_CSP, COMMON_HEADERS, WORKER_CSP, isWorkerScript } from "../../tools/vite/security-headers.ts";
+import { APP_CSP, COMMON_HEADERS, EXECUTOR_CSP, WORKER_CSP, isWorkerScript } from "../../tools/vite/security-headers.ts";
 
 const dirs: string[] = [];
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -175,7 +175,7 @@ describe("static server: configuration", () => {
   it("the generated header file is the single source's values, exactly", () => {
     const file = join(temp(), "headers.json");
     writeFileSync(file, JSON.stringify(serverHeaders()));
-    expect(loadHeaders(file)).toEqual({ app: APP_CSP, worker: WORKER_CSP, common: { ...COMMON_HEADERS } });
+    expect(loadHeaders(file)).toEqual({ app: APP_CSP, executor: EXECUTOR_CSP, worker: WORKER_CSP, common: { ...COMMON_HEADERS } });
   });
 
   it("refuses a missing, empty or header-splitting value", () => {

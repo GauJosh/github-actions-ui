@@ -29,6 +29,22 @@ runner:
   maxConcurrent: 2
   # Finished Jobs are deleted after this; the executor archives their logs first when it sees them finish.
   ttlSecondsAfterFinished: 86400
+  # How runner pods are isolated from the trusted executor (security review M4). The executor refuses to run without a
+  # valid mode, and the admission policy pins the chosen placement, so the boundary you configure is enforced.
+  isolation:
+    # colocated | sandbox | node
+    #  - colocated: pin the runner to the executor's node so the ReadWriteOnce snapshot volume can be shared. This is
+    #    the original behaviour and the WEAKEST: a container escape reaches the node that holds the executor's
+    #    service-account token, snapshots and logs. Use it only where no sandbox runtime is available.
+    #  - sandbox (recommended): still co-located, but run under a sandboxed RuntimeClass (gVisor, Kata), so a container
+    #    escape is contained by the runtime. Set runtimeClass to a RuntimeClass the cluster provides.
+    #  - node: schedule runners onto a separate, tainted node pool (nodeSelector + tolerations), kept off the
+    #    executor's node. Needs snapshot storage reachable from another node (ReadWriteMany); the chart does not
+    #    configure that, so node mode fails to install here (fail closed) until cross-node storage is provided.
+    mode: colocated
+    runtimeClass: ""      # required for mode: sandbox (and optional for node)
+    nodeSelector: {}      # required for mode: node
+    tolerations: []       # for mode: node, to schedule onto the tainted runner pool
 
 # Snapshot storage. ReadWriteOnce: runner pods are scheduled on the executor's node to mount it read-only.
 persistence:
@@ -139,6 +155,21 @@ service:
   port: 8080
 
 basePath: ""
+
+# Where the GitHub-token UI lives (security review M5). The executor must never serve the page on which the GitHub
+# token is entered: a compromised executor could serve modified JavaScript that steals it. So the token UI is served
+# by a separate, trusted origin the executor can't modify (the gha-ui chart, or any static host of the production
+# build), and the executor serves only its OIDC execution console.
+ui:
+  # executor | bundled
+  #  - executor (secure, default): the executor serves only the execution console (sign in, import a prepared
+  #    snapshot, run, follow). It never serves GitHub sign-in or snapshot preparation, and its CSP forbids connecting
+  #    to GitHub. trustedUiUrl is required, so the console can point users to where the token is entered.
+  #  - bundled (local dev only, explicitly insecure): the executor serves the whole app on one origin, including the
+  #    GitHub-token UI. Do not use in production.
+  mode: executor
+  # The separate trusted origin that serves the investigation app and snapshot preparation, e.g. https://gha-ui.example.
+  trustedUiUrl: ""
 
 nodeSelector: {}
 tolerations: []

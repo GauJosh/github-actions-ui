@@ -16,7 +16,7 @@
 - **Theoretical:** depends on the environment.
 
 **Remediation status:**
-- C1, C2, H1, H2, H3 and H4 were remediated afterwards and committed together as one checkpoint; none is deployed. M1–M7 and the low findings remain open. See "Remediation log" at the end.
+- C1, C2, H1, H2, H3 and H4 were remediated and committed together as one checkpoint; none is deployed. M1, M2, M3, M4 and M5 are remediated on the `feat/emergency-security-m1-m7` branch (not yet committed). M6, M7 and the low findings remain open. See "Remediation log" at the end.
 - No proposal (K-1…K-11, Q-R1, Q-R2) is approved by this document.
 
 ---
@@ -134,7 +134,7 @@ The Kubernetes API is reachable, but anonymous access is minimal: anonymous call
 
 ## Medium
 
-### M1. Command injection through step outputs and expression interpolation — Demonstrated
+### M1. Command injection through step outputs and expression interpolation — Demonstrated (remediated, see the log)
 
 **Affected code:**
 - `deploy/emergency/runner/engine.ts:492` honours `::set-output::` on any stdout line, and outputs are interpolated into later scripts.
@@ -147,7 +147,7 @@ The Kubernetes API is reachable, but anonymous access is minimal: anonymous call
 - Warn at validation when `${{ }}` appears inside `run:`.
 - Pass inputs through `env:` in the demo.
 
-### M2. Secret masking is exact-match only — Demonstrated
+### M2. Secret masking is exact-match only — Demonstrated (remediated, see the log)
 
 **Evidence:** the base64 encoding of the signing key appeared in the log.
 
@@ -158,7 +158,7 @@ The Kubernetes API is reachable, but anonymous access is minimal: anonymous call
 - Restrict log access.
 - Reduce exposure (C1).
 
-### M3. Unauthenticated memory exhaustion — Code-confirmed (not tested, to avoid disrupting the deployment)
+### M3. Unauthenticated memory exhaustion — Code-confirmed (remediated, see the log)
 
 **Affected code:**
 - `deploy/emergency/executor/server.ts:63-76` buffers up to 64 MB of any API request body before checking the token.
@@ -171,7 +171,7 @@ The Kubernetes API is reachable, but anonymous access is minimal: anonymous call
 - Limit connections.
 - Restrict ingress.
 
-### M4. Untrusted code is co-scheduled with the executor — Code-confirmed
+### M4. Untrusted code is co-scheduled with the executor — Code-confirmed (remediated, see the log)
 
 **Affected code:** required pod affinity (`deploy/emergency/executor/job-spec.ts:98`), with only the RuntimeDefault seccomp profile.
 
@@ -182,7 +182,7 @@ The Kubernetes API is reachable, but anonymous access is minimal: anonymous call
 - A sandboxed runtime class (gVisor or Kata).
 - Storage that doesn't need affinity.
 
-### M5. The privileged executor serves the UI where users enter their GitHub token — Code-confirmed
+### M5. The privileged executor serves the UI where users enter their GitHub token — Code-confirmed (remediated, see the log)
 
 **Attack scenario:** a compromised executor serves script that steals the GitHub token.
 
@@ -717,3 +717,154 @@ Every refusal names this policy, and no refused Job was stored.
 - **The browser session** is as strong as the device. Sessions end on sign-out, idle or revocation, not on changes at the identity provider (no back-channel logout).
 - **Not tested with a real OpenID Connect provider** (Entra ID, Okta, Keycloak…), and not deployed. Discovery, JWKS and the code exchange are tested only against the development provider, in process. Before production: sign in through the organization's provider, including key rotation and a confidential client.
 - **The ID-token verification is custom code** (`deploy/emergency/executor/auth/jwt.ts`, on Node's crypto, to avoid a dependency). It is unit-tested against forged, mis-signed and mis-claimed tokens, but needs a focused security review (or replacement by a maintained library such as `jose`) before production.
+
+### M1 — remediated 2026-11-02 (branch feat/emergency-security-m1-m7, not committed, not deployed)
+
+**Root cause.** The runner built each `run:` script by pasting `${{ }}` results into the script text before the shell or Python ran it (`deploy/emergency/runner/engine.ts`, the former `interpolateString(step.run, …)`), exactly as GitHub Actions does. Any value that reached a later script — a step's output, a dispatch input, a variable — was parsed as code, so an untrusted tool's stdout could run commands. The runner also honoured the deprecated `::set-output::` command on any stdout line, letting untrusted output set a step's outputs.
+
+**Fix.**
+- **Values are data, not script text** (`src/emergency/script-substitution.ts`, new). Each `${{ }}` in a `run:` is evaluated to a string, bound to an environment variable (`GHA_EXPR_0`, …), and the occurrence is rewritten as a reference the language reads as data. The value's bytes never appear in the script, so they can't be parsed as syntax. This is a design change, not escaping.
+- **Context-aware references.** The substitution detects each occurrence's context and renders a safe reference:
+  - shell unquoted → `"$GHA_EXPR_n"`; double-quoted → `${GHA_EXPR_n}`; single-quoted → close/reopen the quote around a double-quoted reference;
+  - Python code position → `os.environ["GHA_EXPR_n"]`.
+- **Unsafe contexts are refused, never interpolated.** A `${{ }}` inside shell command substitution (`$( )` or backticks) or inside a Python string literal or comment can't be made safe, so it is a blocking **error** at snapshot validation (`src/emergency/prepare.ts`, code `run-expression`) and is also refused by the runner (defense in depth, as H1). The author passes the value through `env:` instead.
+- **Deprecated stdout commands dropped.** `::set-output::` and `::save-state::` on stdout are ignored and kept only as untrusted log data, with a one-per-step runner warning (`source: "runner"`). Outputs and state come solely from the `$GITHUB_OUTPUT` and `$GITHUB_STATE` files, which are unchanged. Validation emits a warning (`deprecated-command`) when a script contains them.
+- **Validation diagnostics.** A safe `run:` expression gets a non-blocking info note (`run-expression`); the snapshot stays executable.
+- **Demo.** The demo's `summarize` composite action read `${{ inputs.version }}` inside a Python string (now a rejected context); it now passes the value through `env:` and reads `os.environ["VERSION"]`.
+
+**Supported vs rejected `${{ }}` contexts in `run:`:**
+
+| Language | Context | Result |
+|---|---|---|
+| bash / sh | unquoted, double-quoted, single-quoted | Supported (value passed as `$GHA_EXPR_n`) |
+| bash / sh | inside `$( … )` or backticks | Rejected at validation and by the runner |
+| Python | code position | Supported (`os.environ[…]`) |
+| Python | inside a string literal or comment | Rejected; use `env:` and `os.environ` |
+
+Values in `env:`, `with:`, `if:`, names, working-directory and outputs are metadata, not scripts, and are unchanged; M1 is only about `run:` bodies.
+
+**Tests.**
+- **Unit, substitution logic** (`src/emergency/script-substitution.test.ts`, 11 tests): context detection for every shell and Python position; the value never appears in the rewritten script; env binding; rejection of unsafe contexts; `checkRunScript` counts and reasons; an end-to-end evaluation against a context.
+- **Execution level, real bash and Python** (`tools/emergency/runner-check.ts`, new scenario, run in the runner image): an inert value made of shell metacharacters (`"; echo M1_EXEC; …`) is consumed in double-quoted, single-quoted and unquoted shell positions and from Python via `env:`. The marker `M1_EXEC` never appears on its own line (it never executed); the value is printed literally in every context; a stdout `::set-output::` sets no output but stays visible as log data with a runner warning; `$GITHUB_OUTPUT` still works. The payload is adversarial: under the old direct interpolation the unquoted and double-quoted positions would have executed it.
+- **Regression:**
+  - unit and contract tests: 652 passed, 1 skipped (the Linux-only runner test, run in the image);
+  - runner check (C1, H1, failure handling, M1): 7/7 in the runner image;
+  - H3 attack check: 30/30 in the runner image; **s16** succeeds through the real entrypoint (exit 0, authenticated stream);
+  - browser tests: 184 passed, 4 opt-in skipped;
+  - TypeScript and lint clean; runner image rebuilt.
+- **H4** is untouched by M1 (no change to the Job spec, admission policy, chart, authentication or network isolation); its admission-gate and admission-check unit tests pass. The live admission harness was last green at 66/66 on the H2 checkpoint and nothing in that path changed.
+
+**What remains.**
+- **Documented semantic change.** Unquoted shell `${{ }}` is now passed as a single quoted argument, so a value is no longer word-split or glob-expanded by the shell — safer, but a workflow that relied on splitting an unquoted value behaves differently.
+- **Rejected contexts need a rewrite.** A workflow with `${{ }}` inside `$( )`, backticks or a Python string must be changed to use `env:`; it is refused rather than run unsafely.
+- **This addresses interpolation into `run:` only.** Other medium findings (M2 masking, M3 memory exhaustion, …) are unchanged and still open.
+
+### M2 — remediated 2026-11-02 (branch feat/emergency-security-m1-m7, not committed, not deployed)
+
+**Original leak.** The runner's masker (`deploy/emergency/runner/engine.ts`, `Masker`) redacted only the exact secret bytes. A workflow that read its secret from `/secrets/<name>` and printed the Base64 of it put the key's Base64 straight into the log, which is archived on the executor's volume and readable by every operator. (This is also GitHub's own limitation.)
+
+**Fix.** The masker now also registers common deterministic encodings of each secret and `::add-mask::` value, so a trivial re-encoding can't dodge masking:
+- standard Base64 and URL-safe Base64 (`+/` → `-_`), each **with and without** trailing `=` padding;
+- computed for both the exact value and its trimmed form (a Secret file often has a trailing newline);
+- only encodings of at least 8 characters are registered, so short values don't turn common words into `***`.
+
+Masking is applied, as before, through `display()` / `displayMap()` **before** anything is emitted, so it covers every user-visible and persisted path: stdout, stderr, step outputs, job and execution outputs, annotations, reasons, and the archived event log. Because masking happens before the event is signed, H3 verification is unaffected (the signed bytes are already masked).
+
+**What did not need changing.** Secret values are still never placed in snapshots, API responses, audit records or execution metadata (C1/H1): the executor never receives a value, and the runner reads values only from the mounted files. The file-based delivery model and C1's required-keys-only restriction are unchanged, and no new Secret-reading permission was added. Error and diagnostic paths already route through `display()`, so they mask too.
+
+**Exact masking coverage:** the exact value; its per-line pieces; standard Base64 (padded and unpadded); URL-safe Base64 (padded and unpadded); of both the raw and trimmed value. Applied to stdout, stderr, step/job/execution outputs, annotations and the persisted log.
+
+**Explicit limits (masking is best-effort, defense in depth, not a guarantee).** It cannot catch a secret that is hashed, encrypted, reversed, case-changed, compressed, hex- or otherwise-encoded, or split across newlines (line-oriented masking sees one line at a time). The real protections remain not packaging secret values and restricting who can read the archived logs. The runner does not attempt exhaustive encoding coverage, because masking a short or low-entropy derived form would redact legitimate output; it fails safe toward readability for forms under 8 characters and documents the gap rather than claiming completeness.
+
+**Tests.**
+- **Unit** (`tests/unit/emergency-masker.test.ts`, 6): exact value masked and other text preserved; standard and URL-safe Base64, padded and unpadded; a value whose Base64 contains `+`/`/`; multi-line secret and its encodings; short common strings not over-redacted; overlapping values longest-first.
+- **Execution level, real bash** (`tools/emergency/runner-check.ts`, new scenario, run in the runner image): a step echoes its harmless test secret raw and Base64-encoded (standard and URL-safe) to stdout, stderr, two step outputs and an annotation. The raw value and both Base64 forms appear nowhere in any event; the `BEGIN`/`END` non-secret lines stay readable; stdout, stderr, outputs and the annotation are all `***`. This reproduces the original Base64 leak and shows it masked. (Within-line output is reassembled into whole lines before masking, so a secret split across read chunks mid-line is still masked; a secret the workflow splits across newlines is the documented limit.)
+- **Regression:** unit and contract 658 passed, 1 skipped (Linux-only runner test, run in the image); runner check 8/8 in the image (now including M1 and M2); H3 attack check 30/30 and **s16** success (exit 0, authenticated stream) in the image; TypeScript and lint clean; runner image rebuilt. Browser tests are unaffected (M2 changed only runner-side code, which is not in the browser bundle; the suite was green at 184 after M1, and the emergency spec was re-run green).
+- **H4** is untouched by M2 (no change to the Job spec or admission-controlled fields); its live harness was not rerun.
+
+**What remains.** M3–M7 and the low findings are open. The documented encoding gaps above remain by design.
+
+### M3 — remediated 2026-11-02 (branch feat/emergency-security-m1-m7, not committed, not deployed)
+
+**Attack path.** The server read and buffered the request body before the API handler ran: for any path under `api/emergency/` it accumulated up to `MAX_SNAPSHOT_BODY` (64 MB) and only then called `api()`, which does the session, CSRF and per-route size checks. So an **unauthenticated** request to any route — even a `GET` or a route that takes no body — could make the executor allocate ~64 MB before rejection, and a few concurrent such requests could exhaust its 512 MiB limit. The namespace NetworkPolicy lets any pod reach the executor's port, so the request need not come from the UI.
+
+**Fix** (`deploy/emergency/executor/http.ts`, new; `server.ts` now uses it). A request pipeline that runs before the body is buffered:
+- **Size first.** Each route has a body limit (POST `snapshots` → the upload limit, everything else → the small limit). A `Content-Length` over the limit is refused with 413 and the body is never read; without a `Content-Length`, the limit is enforced while the body streams and the socket is destroyed the moment it is exceeded, so a chunked upload can't keep sending.
+- **Authenticate before buffering.** The same gate `api.ts` applies is mirrored early: a route that needs the page's `X-GHA-Emergency` header, or a bearer-token refusal, or a route that needs a valid session, is rejected (403 / 401) before any body is read. `api.ts` remains the authority and re-checks everything; the mirror only avoids buffering for requests it would reject anyway, so authentication and authorization semantics are unchanged.
+- **Bounded concurrency.** At most `GHA_EMERGENCY_MAX_UPLOADS` (default 2) snapshot uploads buffer at once; beyond that a 503 is returned before buffering. `server.maxConnections` (`GHA_EMERGENCY_MAX_CONNECTIONS`, default 64) bounds total connections.
+- Rejection responses are generic (`{ "error": … }`) and never echo the body.
+
+**Request limits (configurable, with safe defaults):**
+
+| Setting | Default | Effect |
+|---|---|---|
+| `GHA_EMERGENCY_MAX_UPLOAD_BYTES` | 64 MiB | Largest body for POST `snapshots` |
+| `GHA_EMERGENCY_MAX_REQUEST_BYTES` | 64 KiB | Largest body for every other API route |
+| `GHA_EMERGENCY_MAX_UPLOADS` | 2 | Snapshot uploads buffered at once before 503 |
+| `GHA_EMERGENCY_MAX_CONNECTIONS` | 64 | Total server connections |
+
+Legitimate uploads are unchanged: a signed-in operator's snapshot upload within the limit flows through to `api.ts` exactly as before, and snapshot validation is untouched.
+
+**Tests.**
+- **Pipeline** (`tests/unit/emergency-http.test.ts`, 8, against the real listener with mock req/res because the test environment forbids real sockets): an oversized body is refused by `Content-Length` without being read and the request destroyed; a chunked body with no `Content-Length` is refused mid-stream; missing CSRF, a bearer token and a missing/invalid session are refused before buffering and never reach `api()`; a valid authenticated request flows through with its buffered body; a large body is allowed only on POST `snapshots` up to the upload limit; concurrent uploads past the cap get 503 and a freed slot is reusable; non-API paths pass to the static handler; rejection bodies are generic and never contain the request body.
+- **Session states** are covered through `hasSession`: the pipeline refuses when no live principal maps to the cookie (missing, expired or revoked sessions all resolve to no principal in `auth/store.ts`), before any body is read.
+- **Regression:** unit and contract 666 passed, 1 skipped (Linux-only runner test, run in the image); runner check 8/8, H3 attack check 30/30, **s16** success, all in the runner image; executor image rebuilt and loads `http.ts`; TypeScript and lint clean; emergency browser spec 4 passed. The M1 and M2 unit and execution-level tests pass within these runs. H4 is untouched (no Job-spec or admission-field change).
+
+**What remains.** These are per-connection and per-process bounds on one replica; they are not a substitute for network-level rate limiting or a WAF in front of the executor, and `GHA_EMERGENCY_MAX_CONNECTIONS` must be set below what the pod's memory can hold given the upload limit. Restricting which pods may reach the executor's ingress (tightening the NetworkPolicy) is related and tracked separately. M4–M7 and the low findings are open.
+
+### M4 — remediated 2026-11-02 (branch feat/emergency-security-m1-m7, not committed, not deployed)
+
+**The trust boundary today.** The executor is trusted: its pod mounts the service-account token it uses for the Kubernetes API (Jobs, pods, logs), the operator/break-glass and OIDC-client Secrets, the bindings ConfigMap, and the snapshot volume (read-write). Runner Jobs are untrusted: they run workflow code. The snapshot volume is ReadWriteOnce, so the runner Job carried a **required pod affinity pinning it to the executor's node** (`job-spec.ts`), to mount one snapshot read-only by subPath. Container-level isolation was already strong (non-root, read-only rootfs, all capabilities dropped, RuntimeDefault seccomp, no service-account token, `enableServiceLinks: false`, NetworkPolicy deny-all). **Node-level isolation was absent:** a container escape to the node lands where the executor's token, every snapshot and every archived log live, and could read the executor's files and the kubelet's credentials. That is the finding — container isolation ≠ node isolation.
+
+**What a compromised runner can reach, by layer:**
+- *Within the container* (no escape): only its own snapshot (read-only subPath), its mounted Secret keys (C1), `/work` and `/tmp`; no Kubernetes API (no token), no network (C2).
+- *After a container escape to the node (colocated):* the executor pod's filesystem and process environment, the node's snapshot volume (all snapshots and logs), and the kubelet's service-account token — full node compromise.
+
+**Change — an explicit, enforced isolation mode** (`deploy/emergency/executor/job-spec.ts`, `RunnerIsolation` + `placement()`; chart value `runner.isolation`):
+- **colocated** (default, documented as weakest): the original node pinning, for clusters with no sandbox runtime. An explicit choice, not a silent default.
+- **sandbox** (recommended): co-located so the RWO volume still works, but the runner Pod runs under a sandboxed `RuntimeClass` (gVisor, Kata), so an escape is contained by the runtime instead of reaching the node.
+- **node**: runners scheduled onto a separate, tainted node pool (`nodeSelector` + `tolerations`) and kept off the executor's node by **pod anti-affinity**, so a compromised runner node never holds the executor's credentials or storage.
+
+**Fail closed, not downgrade:**
+- The executor validates the mode at startup and refuses to build any runner Job without a valid one (`RunnerIsolationError`). `sandbox` without a `runtimeClass`, and `node` without a `nodeSelector`, are rejected.
+- `node` mode needs snapshot storage reachable from another node (ReadWriteMany); with the chart's shared ReadWriteOnce volume it is refused — the chart fails the install and the executor refuses the Job. No silent fallback to co-location.
+- The **admission policy (H4)** now pins the placement: a runner Pod's `runtimeClassName`, `nodeSelector` and `tolerations` must match `runner.isolation` exactly (empty means none), and `nodeName`/priority classes stay forbidden. So a compromised executor can't request a different node, runtime class or tolerations than configured.
+
+**Honest limits.** A scheduling constraint is not a runtime boundary: `node` mode protects the executor's node only if the cluster actually honours the taint, node pool and anti-affinity, and only `sandbox` (a real runtime boundary) resists a container escape on the same node. None of this defends against a compromise of a node the runner legitimately runs on, or of the Kubernetes control plane. On the local minikube profiles there is one node and no gVisor/Kata, so the only enforceable modes there are `colocated` (explicit, weakest) and — if a sandbox runtime is installed — `sandbox`; `node` fails closed for lack of RWX storage. The container-level protections (C1, H3, Pod Security restricted) remain the first line of defense in every mode.
+
+**Tests.**
+- **Isolation placement and fail-closed** (`tests/unit/emergency-executor.test.ts`, "security review M4", 6): colocated pins to the executor node; sandbox adds the RuntimeClass and rejects a missing class; node is refused for executions (shared RWO volume) and, for volume-less pods, schedules off the executor node with anti-affinity and rejects an empty nodeSelector; missing/unknown isolation fails closed; canary probes mirror the execution placement while the control pod stays co-located. These prove the Job spec and fail-closed behaviour; they do **not** prove resistance to a node compromise.
+- **Admission (H4), against a real API server** (`tools/emergency/admission-check.ts`, Kubernetes 1.35 with a Job controller and a `gvisor` RuntimeClass): in **sandbox** mode, legitimate Jobs and pods carrying `runtimeClassName: gvisor` are accepted and a Job requesting any other runtime class, a `nodeName`, or extra tolerations is refused — **66/66**; in **colocated** mode — **64/64**. The negative controls (binding removed, dedicated label removed) still hold.
+- **Service-account least privilege** is unchanged and reverified in the harness: the executor still has only Jobs create/get/delete, pods list, pods/log get, events list; the runner has no permissions and no token.
+- **Regression:** unit and contract 672 passed, 1 skipped; runner check 8/8; H3 attack check 30/30 and **s16** success; C2 network canary tests pass (unit) and the canary placement mirrors executions; executor image rebuilt and loads the isolation module; TypeScript and lint clean; emergency browser spec 4 passed. C1, H1, H3, M1–M3 unit and execution-level tests pass within these runs.
+
+**What remains.** M5–M7 and the low findings are open. Node-pool isolation is implemented but unusable until the operator provides ReadWriteMany snapshot storage; sandbox isolation needs a sandbox runtime on the cluster. Neither is available on the local minikube profiles, so there the enforceable improvement is sandbox-when-available, with colocated explicitly chosen and documented as weakest otherwise.
+
+### M5 — remediated 2026-11-02 (branch feat/emergency-security-m1-m7, not committed, not deployed)
+
+**Attack path.** The executor served the single-page app and set its CSP and HTML, and it is the component exposed to untrusted workflow code (a runner escape reaching the executor's node — see M4). The GitHub token lives in the app's memory (`src/auth/pat-provider.ts`) once the user connects, and is used by the investigation views and by emergency *snapshot preparation*. A compromised executor could serve modified JavaScript that reads that token, or hooks `fetch`, and exfiltrates it. CSP alone can't stop this, because the compromised executor also controls the CSP and HTML it serves. Reproduced in principle: executor-served script runs in the same origin as `patProvider`, so it can read the token; the only real fix is that the token-bearing page is not served by the executor.
+
+**Chosen trust boundary.** The GitHub token is entered and held only on a **separate trusted origin** that the executor cannot modify — the investigation app served by the `gha-ui` chart (a minimal static server: no API, no RBAC, no workflow execution, a different image and Deployment). The **executor origin** serves only its OIDC execution console (sign in, list, import, run, approve, follow) and never the GitHub-token UI. The two stay decoupled without cross-origin requests (so H2's same-origin, SameSite=Strict, no-CORS model is untouched): preparation on the trusted origin **exports the snapshot bundle to a file**, which the operator **imports** into the executor console. The GitHub token never reaches the executor origin.
+
+**Changes.**
+- **Per-origin role** (`src/app/ui-config.ts`), delivered in a CSP-safe `<meta>` tag injected by whichever server serves the page (`deploy/ui/server.mjs`): `trusted` (full app, holds the token), `executor` (console only, never the token), `bundled` (single-origin local dev). A compromised executor can flip its own flag, but that only lets it phish — it still cannot read a token entered on the separate trusted origin (browser origin isolation).
+- **The executor serves only the console** (`App.tsx`): on the `executor` role there is no GitHub sign-in, no investigation views and no preparation; the console shows an "import a prepared snapshot" control and points to the trusted UI.
+- **Stricter executor CSP** (`tools/vite/security-headers.ts` `EXECUTOR_CSP`): `connect-src 'self'` only — no `api.github.com`, no blob storage — so even injected script on the executor origin cannot reach GitHub. Defense in depth, on top of the real control.
+- **Snapshot file hand-off** (`src/ui/emergency/snapshot-file.ts`): export on the trusted origin's prepare page, import on the executor console. The executor re-validates every uploaded bundle (H1), so a tampered file is refused.
+- **Fail closed** (`deploy/emergency/executor/server.ts`, chart): in secure mode (`ui.mode=executor`, the default) the executor refuses to start, and the chart refuses to install, without `ui.trustedUiUrl`. The executor can never be the `trusted` origin. `bundled` single-origin mode is available for local dev but must be chosen explicitly.
+
+**Deployment implications.** Two origins: serve the trusted investigation UI from the `gha-ui` chart (or any static host of the production build) — that origin holds the token; deploy the executor with `ui.mode=executor` and `ui.trustedUiUrl=<trusted origin>`. Operators prepare on the trusted origin, export the file, and import it on the executor console. For a quick local demo, `ui.mode=bundled` keeps everything on one origin (explicitly insecure).
+
+**Tests.**
+- **UI origin server** (`tests/unit/ui-origin.test.ts`, 5): the executor origin declares the `executor` role, points to the trusted UI, and serves the executor CSP (no `api.github.com`/blob); the trusted origin serves the app CSP; the config rides in a CSP-safe meta tag, never an inline script; an invalid role is rejected.
+- **Role reader** (`src/app/ui-config.test.ts`, 4): defaults, trusted/executor parsing, and that the executor role may never hold the token.
+- **Snapshot file** (`src/ui/emergency/snapshot-file.test.ts`, 2): round-trip, and rejection of a file that is not an export.
+- **Browser** (`tests/e2e/emergency.spec.ts`): on the executor origin there is no GitHub sign-in or token entry, the console loads and offers import, and GitHub is never contacted; on the trusted origin GitHub sign-in works and a prepared snapshot can be exported to a file without uploading. The static-server e2e confirms the trusted build runs with the app CSP and no CSP violations from the injected config.
+- **Token never reaches the executor:** the executor client (`src/emergency/executor-client.ts`) sends no `Authorization` header (unchanged), and the executor origin never creates a token-bearing GitHub client.
+- **Regression:** unit and contract 683 passed, 1 skipped; full browser suite green (including the two new M5 tests); runner check 8/8, H3 attack check 30/30 and **s16** unchanged (M5 does not touch the runner); executor image rebuilt and fails closed without `ui.trustedUiUrl`; TypeScript and lint clean. H4 is untouched (M5 changes no Job or admission-controlled field).
+
+**Residual risks (honest).**
+- **Phishing, not silent theft.** A compromised executor can still serve a page that *asks* for a GitHub token (on its own origin). The architecture prevents *silent* theft of a token entered on the trusted origin; it cannot stop a user from typing their token into a malicious prompt on the wrong origin. Mitigations are operational: the token is only ever entered on the trusted origin's URL, and the executor's CSP blocks exfiltration to GitHub/blob.
+- **Same bundle.** The executor still serves the same SPA build (the token code is present but never reached on the `executor` role). A fully separate console bundle with no GitHub code would remove even the phishing surface; it is deferred.
+- **Trusted origin's own integrity.** This assumes the `gha-ui` origin is served from immutable, independently built assets the executor can't write; if an attacker can modify those assets or that origin, the token is again at risk.
+- M6 and M7 and the low findings remain open.

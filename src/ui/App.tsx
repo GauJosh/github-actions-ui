@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createEnvironment, modeFromLocation, type Mode } from "../app/environment";
+import { githubAllowedHere, uiConfig } from "../app/ui-config";
 import { patProvider } from "../auth/pat-provider";
 import { parseHash } from "../domain/run-url";
 import { FixtureBanner } from "../fixture-mode/FixtureBanner";
@@ -83,6 +84,10 @@ function Main({ mode }: { mode: Mode }) {
   const route = parseHash(hash);
   // Emergency execution never needs GitHub to be reachable, so it is routed before the GitHub sign-in.
   const emergency = parseEmergencyHash(hash);
+  // Security review M5: on the executor origin the app never holds the GitHub token, so it serves only the emergency
+  // console — no GitHub sign-in and no investigation views (both would require the token this origin must not hold).
+  const ui = uiConfig();
+  const githubHere = githubAllowedHere(ui.role);
   const [connected, setConnected] = useState(() => patProvider.describe().connected);
   const queryClient = useQueryClient();
 
@@ -99,15 +104,22 @@ function Main({ mode }: { mode: Mode }) {
       <header className="topbar">
         <Brand />
         <div className="topbar-actions">
-          <a href="#/emergency" className="emergency-link" data-testid="emergency-nav">
-            Emergency execution
-          </a>
+          {githubHere && (
+            <a href="#/emergency" className="emergency-link" data-testid="emergency-nav">
+              Emergency execution
+            </a>
+          )}
           <ThemeToggle />
-          {mode === "live" && connected && <button onClick={disconnect}>Disconnect</button>}
+          {githubHere && mode === "live" && connected && <button onClick={disconnect}>Disconnect</button>}
         </div>
       </header>
       <main>
-        {emergency ? (
+        {!githubHere ? (
+          // The executor origin: only the emergency console, which never holds the GitHub token (security review M5).
+          <Suspense fallback={<p className="state">Loading emergency execution…</p>}>
+            <EmergencyView env={env} route={emergency ?? { page: "home" }} githubConnected={false} />
+          </Suspense>
+        ) : emergency ? (
           <Suspense fallback={<p className="state">Loading emergency execution…</p>}>
             <EmergencyView env={env} route={emergency} githubConnected={mode === "fixtures" || connected} />
           </Suspense>

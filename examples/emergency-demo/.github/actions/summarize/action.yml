@@ -21,8 +21,12 @@ runs:
         echo "text=${text}" >> "$GITHUB_OUTPUT"
         echo "${text}"
     - shell: python
+      # The version is passed through env: and read from os.environ, so the value is data, never Python source
+      # (security review M1): a ${{ }} inside a Python string literal is refused by validation.
+      env:
+        VERSION: ${{ inputs.version }}
       run: |
         import os
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
-            f.write("## Emergency demo release\n\n${{ inputs.version }}\n")
+            f.write("## Emergency demo release\n\n" + os.environ["VERSION"] + "\n")
         print("Job summary written")

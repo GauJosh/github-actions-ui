@@ -74,7 +74,7 @@ export function loadHeaders(file) {
   if (!ok(h?.app) || !ok(h?.worker) || typeof h.common !== "object" || !Object.entries(h.common).every(([k, v]) => ok(k) && ok(v))) {
     throw new Error(`Invalid security headers in ${file}`);
   }
-  return { app: h.app, worker: h.worker, common: { ...h.common } };
+  return { app: h.app, executor: h.executor ?? h.app, worker: h.worker, common: { ...h.common } };
 }
 
 export function checkBasePath(basePath) {
@@ -90,14 +90,28 @@ const text = (body) => ({ body: Buffer.from(body), type: "text/plain; charset=ut
  * The whole request policy as a pure function of the method and the raw request target.
  * Returns `{ status, headers, body }`; `body` is empty for HEAD.
  */
-export function createHandler({ site, headers, basePath = "/" }) {
+export function createHandler({ site, headers, basePath = "/", ui = {} }) {
   checkBasePath(basePath);
+  // Security review M5: which origin this is. "trusted" serves the full app that holds the GitHub token; "executor"
+  // serves only the OIDC execution console and must never hold a token (its index.html declares the role so the app
+  // never creates the GitHub client there, and it is served the stricter executor CSP); "bundled" is single-origin dev.
+  const role = ui.role ?? "trusted";
+  if (!["trusted", "executor", "bundled"].includes(role)) throw new Error(`Invalid UI role ${JSON.stringify(role)}`);
+  const appCsp = role === "executor" ? headers.executor : headers.app;
+  // The config the browser reads (src/app/ui-config.ts). Carried in a <meta> tag — not an inline <script>, which the
+  // app CSP (script-src 'self') forbids — base64-encoded so no HTML escaping is needed in the attribute.
+  const config = Buffer.from(JSON.stringify({ role, trustedUiUrl: ui.trustedUiUrl ?? "" }), "utf8").toString("base64");
+  const index = site.get("index.html");
+  const indexWithConfig =
+    index && /<head>/i.test(index.body.toString("utf8"))
+      ? { ...index, body: Buffer.from(index.body.toString("utf8").replace(/<head>/i, `<head><meta name="gha-ui-config" content="${config}">`)) }
+      : index;
   return (method, rawUrl) => {
     const respond = (status, file, extra = {}) => ({
       status,
       headers: {
         ...headers.common,
-        "Content-Security-Policy": extra.csp ?? headers.app,
+        "Content-Security-Policy": extra.csp ?? appCsp,
         "Content-Type": file.type,
         "Content-Length": String(file.body.length),
         "Cache-Control": extra.cache ?? "no-store",
@@ -115,17 +129,17 @@ export function createHandler({ site, headers, basePath = "/" }) {
     }
     if (!path.startsWith(basePath)) return respond(404, text("Not found\n"));
     const rel = path.slice(basePath.length) || "index.html";
-    const file = site.get(rel);
+    const file = rel === "index.html" ? indexWithConfig : site.get(rel);
     if (!file) return respond(404, text("Not found\n"));
     return respond(200, file, {
-      csp: WORKER.test(rel) ? headers.worker : headers.app,
+      csp: WORKER.test(rel) ? headers.worker : appCsp,
       cache: HASHED.test(rel) ? "public, max-age=31536000, immutable" : "no-cache",
     });
   };
 }
 
-export function startServer({ site, headers, basePath = "/", port = 8080, host }) {
-  const handle = createHandler({ site, headers, basePath });
+export function startServer({ site, headers, basePath = "/", port = 8080, host, ui }) {
+  const handle = createHandler({ site, headers, basePath, ui });
   const server = createServer((req, res) => {
     let r;
     try {
@@ -159,7 +173,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const basePath = checkBasePath(process.env.GHA_UI_BASE_PATH ?? "/");
   const site = loadSite(root);
   const headers = loadHeaders(process.env.GHA_UI_HEADERS_FILE ?? join(here, "security-headers.json"));
-  const server = await startServer({ site, headers, basePath, port: envPort(process.env.PORT) });
+  // Security review M5: the standalone gha-ui server is the trusted origin by default (it holds the GitHub token and
+  // has no executor API). GHA_UI_ROLE can override for a bundled single-origin dev deployment.
+  const ui = { role: process.env.GHA_UI_ROLE ?? "trusted", trustedUiUrl: process.env.GHA_UI_TRUSTED_URL ?? "" };
+  const server = await startServer({ site, headers, basePath, port: envPort(process.env.PORT), ui });
   const { port } = server.address();
   console.log(`gha-ui: serving ${site.size} files under ${basePath} on port ${port}`);
   const stop = () => {

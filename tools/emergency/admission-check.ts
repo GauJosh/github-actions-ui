@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { request } from "node:https";
 import { parseArgs } from "node:util";
 import { createAdmissionCheck } from "../../deploy/emergency/executor/admission-check.ts";
-import { buildCanaryJob, buildJob, type CanaryRole } from "../../deploy/emergency/executor/job-spec.ts";
+import { buildCanaryJob, buildJob, type CanaryRole, type RunnerIsolation } from "../../deploy/emergency/executor/job-spec.ts";
 import { KubeError, type KubeApi } from "../../deploy/emergency/executor/kube.ts";
 
 type Obj = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- Kubernetes objects are untyped JSON here
@@ -98,6 +98,7 @@ const config = {
   pvcName: env.GHA_EMERGENCY_PVC!,
   serviceAccountName: env.GHA_EMERGENCY_RUNNER_SERVICE_ACCOUNT!,
   executorPodLabels: JSON.parse(env.GHA_EMERGENCY_EXECUTOR_POD_LABELS!) as Record<string, string>,
+  isolation: JSON.parse(env.GHA_EMERGENCY_RUNNER_ISOLATION!) as RunnerIsolation,
   resources: { cpu: env.GHA_EMERGENCY_RUNNER_CPU!, memory: env.GHA_EMERGENCY_RUNNER_MEMORY!, scratch: env.GHA_EMERGENCY_RUNNER_SCRATCH! },
   maxMinutes: Number(env.GHA_EMERGENCY_MAX_MINUTES),
   ttlSecondsAfterFinished: Number(env.GHA_EMERGENCY_JOB_TTL_SECONDS),
@@ -115,7 +116,7 @@ function execution(opts: { secret?: boolean } = {}): Obj {
   return structuredClone(buildJob({ ...input, secret: opts.secret && bound ? { name: bound.secret, keys: [bound.keys[0]!] } : undefined })) as Obj;
 }
 const canary = (role: CanaryRole): Obj =>
-  structuredClone(buildCanaryJob({ checkId: nextId().slice(-8), role, targets: [{ name: "x", host: "10.0.0.1", port: 443 }], namespace: ns, runnerImage: config.runnerImage, serviceAccountName: config.serviceAccountName, executorPodLabels: config.executorPodLabels })) as Obj;
+  structuredClone(buildCanaryJob({ checkId: nextId().slice(-8), role, targets: [{ name: "x", host: "10.0.0.1", port: 443 }], namespace: ns, runnerImage: config.runnerImage, serviceAccountName: config.serviceAccountName, executorPodLabels: config.executorPodLabels, isolation: config.isolation })) as Obj;
 const pod = (j: Obj): Obj => j.spec.template.spec;
 const ctr = (j: Obj): Obj => pod(j).containers[0];
 const volume = (j: Obj, name: string): Obj => pod(j).volumes.find((v: Obj) => v.name === name);
@@ -305,7 +306,7 @@ const kube: KubeApi = {
   podLog: async () => "",
   podWarnings: async () => [],
 };
-const check = () => createAdmissionCheck({ kube, config: { namespace: ns, runnerImage: config.runnerImage, runnerServiceAccount: config.serviceAccountName, executorPodLabels: config.executorPodLabels, policyName, maxAgeMs: 0, retryMs: 0 } }).run();
+const check = () => createAdmissionCheck({ kube, config: { namespace: ns, runnerImage: config.runnerImage, runnerServiceAccount: config.serviceAccountName, executorPodLabels: config.executorPodLabels, isolation: config.isolation, policyName, maxAgeMs: 0, retryMs: 0 } }).run();
 console.log("\nThe executor's admission check (deploy/emergency/executor/admission-check.ts):");
 {
   const r = await check();

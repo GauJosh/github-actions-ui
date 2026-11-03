@@ -52,7 +52,7 @@ import type { IdentityProvider } from "./auth/oidc.ts";
 import { isRole, permissionsOf, ROLES, type Permission, type Role } from "./auth/roles.ts";
 import { USER_ID, type AuthStore, type Principal } from "./auth/store.ts";
 import { bindingFor, type BindingState, type SecretBinding } from "./bindings.ts";
-import { buildJob, EXECUTION_LABEL, jobName, RUNNER_CONTAINER, type NetworkMode } from "./job-spec.ts";
+import { buildJob, EXECUTION_LABEL, jobName, RUNNER_CONTAINER, type NetworkMode, type RunnerIsolation } from "./job-spec.ts";
 import type { KubeApi, K8sJob } from "./kube.ts";
 import type { NetworkChecker } from "./network-check.ts";
 import type { ExecutionMeta, Store } from "./store.ts";
@@ -73,6 +73,8 @@ export type ExecutorConfig = {
   pvcName: string;
   runnerServiceAccount: string;
   executorPodLabels: Record<string, string>;
+  /** Where runner pods run relative to the executor (security review M4). */
+  isolation: RunnerIsolation;
   resources: { cpu: string; memory: string; scratch: string };
   maxMinutes: number;
   maxConcurrent: number;
@@ -330,6 +332,7 @@ export function createApi(deps: {
       snapshotSubPath: store.subPath(meta.snapshotId),
       serviceAccountName: config.runnerServiceAccount,
       executorPodLabels: config.executorPodLabels,
+      isolation: config.isolation,
       resources: config.resources,
       maxMinutes: config.maxMinutes,
       ttlSecondsAfterFinished: config.ttlSecondsAfterFinished,

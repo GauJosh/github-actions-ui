@@ -7,7 +7,9 @@
 //   checks every request.
 import { createContext, useContext, useEffect, useState } from "react";
 import type { Environment } from "../../app/environment";
+import { githubAllowedHere, uiConfig } from "../../app/ui-config";
 import { executor, ExecutorError, signInUrl, type ExecutionSummary, type SessionView, type SignInOptions } from "../../emergency/executor-client";
+import { readSnapshotFile } from "./snapshot-file";
 import type { SnapshotRecord } from "../../emergency/snapshot";
 import { relativeTime } from "../format";
 import { AdminPage } from "./AdminPage";
@@ -97,7 +99,7 @@ export function EmergencyView({ env, route, githubConnected }: { env: Environmen
         <NoRoles session={session} />
       ) : (
         <SessionContext.Provider value={session}>
-          {route.page === "prepare" ? (
+          {route.page === "prepare" && githubAllowedHere() ? (
             <PrepareSnapshot env={env} githubConnected={githubConnected} />
           ) : route.page === "snapshot" ? (
             <SnapshotPage id={route.id} env={env} githubConnected={githubConnected} />
@@ -232,12 +234,20 @@ function EmergencyHome() {
       <section className="panel">
         <div className="panel-head">
           <h3>Snapshots</h3>
-          {can(session, "snapshots.create") && (
-            <a className="button-link" href={emergencyHref({ page: "prepare" })} data-testid="prepare-link">
-              Prepare a snapshot
-            </a>
-          )}
+          {can(session, "snapshots.create") &&
+            (githubAllowedHere() ? (
+              <a className="button-link" href={emergencyHref({ page: "prepare" })} data-testid="prepare-link">
+                Prepare a snapshot
+              </a>
+            ) : (
+              <ImportSnapshot onImported={() => setReload((n) => n + 1)} />
+            ))}
         </div>
+        {!githubAllowedHere() && (
+          <p className="muted" data-testid="prepare-elsewhere">
+            Prepare snapshots on the trusted UI{uiConfig().trustedUiUrl ? <> at <a href={uiConfig().trustedUiUrl}>{uiConfig().trustedUiUrl}</a></> : ""}, then import the exported file here. The GitHub token is never entered on this execution console (security review M5).
+          </p>
+        )}
         {error && <p className="state state-error">{error}</p>}
         {snapshots === null ? (
           <p className="state">Loading…</p>
@@ -324,6 +334,41 @@ function EmergencyHome() {
         )}
       </section>
     </div>
+  );
+}
+
+/** Security review M5: import a snapshot prepared on the trusted UI, on the executor console (no GitHub token here). */
+function ImportSnapshot({ onImported }: { onImported: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <span className="import-snapshot">
+      <label className="button-link" data-testid="import-snapshot">
+        {busy ? "Importing…" : "Import snapshot file"}
+        <input
+          type="file"
+          accept=".json,application/json"
+          hidden
+          disabled={busy}
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            setBusy(true);
+            setError(null);
+            try {
+              await executor.uploadSnapshot(await readSnapshotFile(file));
+              onImported();
+            } catch (err) {
+              setError(errorText(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      </label>
+      {error && <span className="state state-error">{error}</span>}
+    </span>
   );
 }
 

@@ -323,6 +323,7 @@ helm install gha-ui charts/gha-ui --namespace gha-ui --wait
 - Permission to create cluster-scoped admission policies.
 - The two images (the `executor` and `runner` targets of [`deploy/emergency/Dockerfile`](deploy/emergency/Dockerfile)). The runner is referenced by its **digest**.
 - A sign-in method: your OpenID Connect provider (`auth.oidc`, with your first administrator in `auth.initialAdministrators`) and/or break-glass accounts.
+- A separate **trusted UI origin** (`ui.trustedUiUrl`) where the GitHub token is entered — the investigation app served by the `gha-ui` chart or any static host. The executor never serves the token UI (security review M5); it serves only the execution console and forbids GitHub connectivity in its CSP.
 
 The outline:
 
@@ -333,7 +334,8 @@ helm install gha-emergency charts/gha-emergency -n gha-emergency \
   --set executor.image.tag=<tag> --set runner.image.digest=sha256:<digest> \
   --set auth.oidc.issuer=<issuer URL> --set auth.oidc.clientId=<client ID> \
   --set auth.oidc.redirectUri=https://<host>/api/emergency/auth/callback \
-  --set "auth.initialAdministrators[0].issuer=<issuer URL>" --set "auth.initialAdministrators[0].subject=<your subject>"
+  --set "auth.initialAdministrators[0].issuer=<issuer URL>" --set "auth.initialAdministrators[0].subject=<your subject>" \
+  --set ui.trustedUiUrl=https://<trusted-gha-ui-host>
 ```
 
 Secrets for snapshots are created and bound to snapshot digests after preparation, with `secretBindings`. The full tested sequence is in [Run the MVP locally](docs/EMERGENCY_EXECUTION.md#10-run-the-mvp-locally-windows-with-podman-and-minikube-as-tested): building and loading the images, finding the runner's digest, break-glass accounts for a cluster without an identity provider, binding a Secret, and migrating from the old shared operator token.

@@ -3,9 +3,9 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { APP_CSP, COMMON_HEADERS, WORKER_CSP } from "../../tools/vite/security-headers.ts";
+import { APP_CSP, COMMON_HEADERS, EXECUTOR_CSP, WORKER_CSP } from "../../tools/vite/security-headers.ts";
 
-export const serverHeaders = () => ({ app: APP_CSP, worker: WORKER_CSP, common: { ...COMMON_HEADERS } });
+export const serverHeaders = () => ({ app: APP_CSP, executor: EXECUTOR_CSP, worker: WORKER_CSP, common: { ...COMMON_HEADERS } });
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const out = process.argv[2];

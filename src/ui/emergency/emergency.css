@@ -299,3 +299,13 @@
   overflow-wrap: anywhere;
   font-size: 12px;
 }
+
+/* Security review M5: import a snapshot prepared on the trusted UI (executor console). */
+.import-snapshot {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.import-snapshot input[type="file"] {
+  display: none;
+}

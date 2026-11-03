@@ -18,6 +18,7 @@ policy is enforced before any execution (deploy/emergency/executor/admission-che
 {{- $ns := .Release.Namespace }}
 {{- $image := include "gha-emergency.runnerImage" . }}
 {{- $deadline := add (mul (int .Values.runner.maxMinutes) 60) 120 }}
+{{- $isolation := include "gha-emergency.runnerIsolation" . | fromJson }}
 {{- $modes := list "isolated" }}
 {{- if .Values.network.allowEgressMode }}{{ $modes = append $modes "egress" }}{{ end }}
 {{- /* "snapshots/<digest>:<secret>:<key>": each key a binding gives each snapshot (bindings.yaml validates them). */}}
@@ -216,16 +217,20 @@ spec:
           : (variables.isCanary && variables.volumes.all(v, has(v.emptyDir)))
       message: "pods must carry the runner labels its NetworkPolicies select, with network mode {{ join " or " $modes }}; only the network canary's control pod may go without them"
       reason: Forbidden
+    # Security review M4: the configured runner isolation is the only placement allowed. runtimeClass, nodeSelector
+    # and tolerations must match runner.isolation exactly (empty means none); nodeName and priority classes stay out.
     - expression: >-
         variables.pod.restartPolicy == 'Never' &&
-        !has(variables.pod.nodeName) && !has(variables.pod.runtimeClassName) && !has(variables.pod.resourceClaims) &&
-        (!variables.isJob || (!has(variables.pod.nodeSelector) && !has(variables.pod.priorityClassName))) &&
+        !has(variables.pod.nodeName) && !has(variables.pod.resourceClaims) &&
+        (!has(variables.pod.runtimeClassName) || variables.pod.runtimeClassName == {{ (index $isolation "runtimeClass" | default "") | quote }}) &&
+        (!variables.isJob || !has(variables.pod.priorityClassName)) &&
+        (!has(variables.pod.nodeSelector) || variables.pod.nodeSelector == {{ index $isolation "nodeSelector" | default dict | toJson }}) &&
         (!has(variables.pod.tolerations) || variables.pod.tolerations.all(t,
-          has(t.key) && t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
-          has(t.effect) && t.effect == 'NoExecute' && has(t.operator) && t.operator == 'Exists')) &&
+          (has(t.key) && t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] && has(t.effect) && t.effect == 'NoExecute' && has(t.operator) && t.operator == 'Exists')
+          || t in {{ index $isolation "tolerations" | default list | toJson }})) &&
         (!has(variables.pod.hostAliases) || variables.pod.hostAliases.all(h, h.ip == '127.0.0.1')) &&
         (!has(variables.pod.os) || variables.pod.os.name == 'linux')
-      message: "no restarts, node selection, tolerations (beyond the API server's defaults), runtime classes, priority classes or host aliases other than 127.0.0.1"
+      message: "runner pods may use only the configured isolation placement (runner.isolation): no nodeName, no other runtime class, node selector, tolerations, priority classes or host aliases other than 127.0.0.1"
       reason: Forbidden
     - expression: "variables.jobLimits"
       message: "one pod, one attempt (backoffLimit 0) and an activeDeadlineSeconds of at most {{ $deadline }}"

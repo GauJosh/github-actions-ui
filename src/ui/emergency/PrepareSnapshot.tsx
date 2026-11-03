@@ -11,6 +11,7 @@ import { hasErrors, toBase64, type Manifest, type Visibility } from "../../emerg
 import { GitHubError } from "../../github/client";
 import { failureText } from "../copy";
 import { emergencyHref, errorText } from "./EmergencyView";
+import { exportSnapshotFile } from "./snapshot-file";
 import { ManifestDetails } from "./ManifestDetails";
 
 type Prepared = { manifest: Manifest; contents: Map<string, Uint8Array> };
@@ -198,6 +199,10 @@ export function PrepareSnapshot({ env, githubConnected }: { env: Environment; gi
               </p>
             ) : (
               <>
+                {/* Security review M5: export the prepared bundle to a file to import on the executor console. */}
+                <button type="button" onClick={() => exportSnapshotFile(prepared!.manifest.name || "snapshot", { manifest: prepared!.manifest, contents: Object.fromEntries([...prepared!.contents].map(([k, v]) => [k, toBase64(v)])) })} data-testid="export-snapshot">
+                  Export snapshot file
+                </button>{" "}
                 <label className="visibility">
                   Visibility{" "}
                   <select value={visibility} onChange={(e) => setVisibility(e.target.value as Visibility)} data-testid="snapshot-visibility">

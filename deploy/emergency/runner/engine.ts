@@ -6,9 +6,16 @@
 // - Jobs run one at a time, in `needs:` order (file order among ready jobs); reusable workflows run inline.
 // - Steps: `run:` (bash, sh, python), JavaScript actions (main, and post at job end), composite actions,
 //   and actions/checkout of the snapshot commit (already satisfied by the packaged workspace).
-// - GITHUB_OUTPUT, GITHUB_ENV, GITHUB_PATH, GITHUB_STATE and GITHUB_STEP_SUMMARY files and the ::set-output::,
-//   ::add-mask::, ::error:: (warning, notice) and ::save-state:: workflow commands are supported.
-// - Secret values (and ::add-mask:: values) are masked in every log line and output before they are emitted.
+// - Outputs, exported env, PATH additions and the step summary come from the $GITHUB_OUTPUT, $GITHUB_ENV,
+//   $GITHUB_PATH, $GITHUB_STATE and $GITHUB_STEP_SUMMARY files. Of the stdout workflow commands, ::add-mask::,
+//   ::error::, ::warning:: and ::notice:: are honoured; ::set-output:: and ::save-state:: are deprecated by GitHub
+//   and ignored as untrusted data (security review M1), with a runner warning.
+// - Secret values (and ::add-mask:: values), and their standard and URL-safe Base64 encodings, are masked in every
+//   log line, annotation and output before they are emitted (security review M2). Masking is best-effort: it can't
+//   catch a secret that was hashed, encrypted, reversed or split across newlines.
+// - Security review M1: a ${{ }} value in a run: script is passed as an environment variable and referenced as data
+//   (src/emergency/script-substitution.ts), never pasted into the script text, so it cannot become shell or Python
+//   syntax.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
@@ -16,6 +23,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSy
 import { connect } from "node:net";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { evaluate, interpolate, interpolateString, parseCondition, stringify, truthy, type JobStatus } from "../../../src/emergency/expressions.ts";
+import { substituteRunWithContext, UnsafeExpressionContextError } from "../../../src/emergency/script-substitution.ts";
 import { sanitizeText } from "../../../src/emergency/event-stream.ts";
 import type { RunnerEvent, StepResult } from "../../../src/emergency/events.ts";
 import type { ActionDef, JobDef, StepDef, WorkflowDef } from "../../../src/emergency/model.ts";
@@ -43,16 +51,38 @@ export type RunnerConfig = {
 type Contexts = Record<string, unknown>;
 type JobRecord = { result: StepResult; outputs: Record<string, string> };
 
-class Masker {
+/**
+ * Redacts secret values (and ::add-mask:: values) from everything the runner emits (security review M2). Besides the
+ * exact value, it registers the value's common deterministic encodings, because a workflow can trivially re-encode a
+ * secret to dodge exact-match masking: standard and URL-safe Base64, each with and without padding. Masking is
+ * best-effort and line-oriented: it cannot catch a secret that was hashed, encrypted, reversed, split across newlines,
+ * or otherwise transformed. The real protections are not packaging secret values (C1/H1) and restricting log access.
+ */
+export class Masker {
   private values = new Set<string>();
   add(value: string) {
-    for (const v of [value, ...value.split(/\r?\n/)]) if (v.trim().length > 0) this.values.add(v);
+    for (const v of [value, ...value.split(/\r?\n/)]) {
+      const t = v.trim();
+      if (t.length === 0) continue;
+      this.values.add(v);
+      for (const form of [v, t]) for (const enc of encodings(form)) this.values.add(enc);
+    }
   }
   apply(text: string): string {
     let out = text;
+    // Longest first, so a value that contains a shorter registered value is redacted whole.
     for (const v of [...this.values].sort((a, b) => b.length - a.length)) out = out.split(v).join("***");
     return out;
   }
+}
+
+/** Standard and URL-safe Base64 of a value, with and without padding; only forms long enough not to over-redact. */
+function encodings(value: string): string[] {
+  const std = Buffer.from(value, "utf8").toString("base64");
+  const url = std.replace(/\+/g, "-").replace(/\//g, "_");
+  const strip = (s: string) => s.replace(/=+$/, "");
+  // At least 8 characters, so short values don't turn common words into "***".
+  return [...new Set([std, strip(std), url, strip(url)])].filter((e) => e.length >= 8);
 }
 
 const now = () => new Date().toISOString();
@@ -82,6 +112,8 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
   const started = Date.now();
   const emit = config.emit;
   const masker = new Masker();
+  // Steps that printed a deprecated ::set-output::/::save-state:: command, so the runner warns only once each (M1).
+  const warnedStdoutCommand = new Set<string>();
   const maxMinutes = config.maxMinutes ?? 60;
   const cmd = config.commands ?? { bash: "bash", sh: "sh", python: "python3", node: "node" };
   // Security review H3: everything the runner emits from workflow-controlled text is masked, then sanitized
@@ -339,13 +371,22 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
     const stepEnv = { ...(ctx.env as Record<string, string>), ...Object.fromEntries(Object.entries(step.env).map(([k, v]) => [k, interpolateString(v, evalCtx)])) };
     const timeoutAt = Math.min(place.deadline, Date.now() + Math.min(step.timeoutMinutes ?? maxMinutes, maxMinutes) * 60_000);
     if (step.run !== undefined) {
-      const script = interpolateString(step.run, evalCtx);
       const shell = (step.shell ?? place.shell ?? "").trim();
       const wd = resolveInside(place.workspace, step.workingDirectory ?? place.workingDirectory, evalCtx);
       const { argv, ext } = shellCommand(shell, cmd);
+      // Security review M1: each ${{ }} value is passed to the script as an environment variable and referenced as
+      // data, never pasted into the script text, so a value can't become shell or Python syntax. A context that
+      // can't be made safe (validation already refuses it) is refused here too.
+      let subst: { script: string; env: Record<string, string> };
+      try {
+        subst = substituteRunWithContext(step.run, ext === ".py" ? "python" : "shell", evalCtx);
+      } catch (error) {
+        if (error instanceof UnsafeExpressionContextError) return { outcome: "failure", exitCode: null, outputs: {}, reason: `Refusing to run this step: ${error.message}` };
+        throw error;
+      }
       const file = join(place.temp, `${randomUUID()}${ext}`);
-      writeFileSync(file, script);
-      return runProcess(argv.map((a) => (a === "{0}" ? file : a)), wd, stepEnv, state, place, no, step.id, timeoutAt);
+      writeFileSync(file, subst.script);
+      return runProcess(argv.map((a) => (a === "{0}" ? file : a)), wd, { ...stepEnv, ...subst.env }, state, place, no, step.id, timeoutAt);
     }
     const u = parseUses(step.uses ?? "");
     if (isCheckout(u)) {
@@ -470,7 +511,7 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
           buf += chunk.toString("utf8");
           const parts = buf.split(/\r?\n/);
           buf = parts.pop()!;
-          for (const line of parts) handleLine(line, stream, place, no, outputs);
+          for (const line of parts) handleLine(line, stream, place, no);
         };
       };
       const out = lines("stdout");
@@ -498,21 +539,26 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
     return { outcome: outcome === "cancelled" ? "failure" : outcome, exitCode: result.code, outputs, reason: result.reason ?? (result.code === 0 ? undefined : `exit code ${result.code}`) };
   };
 
-  const handleLine = (line: string, stream: "stdout" | "stderr", place: Place, no: number, outputs: Record<string, string>) => {
-    const cmdMatch = /^::([a-z-]+)(?:\s+([^:]*))?::(.*)$/.exec(line);
+  const handleLine = (line: string, stream: "stdout" | "stderr", place: Place, no: number) => {
+    const cmdMatch = /^::([a-z-]+)(?:\s+(?:[^:]*))?::(.*)$/.exec(line);
     if (cmdMatch) {
-      const [, name, props = "", value = ""] = cmdMatch as unknown as [string, string, string?, string?];
+      const [, name, value = ""] = cmdMatch as unknown as [string, string, string?];
       if (name === "add-mask") {
         masker.add(value);
         log("::add-mask::***", place.key, no, stream);
         return;
       }
-      if (name === "set-output") {
-        const n = /name=([^,]+)/.exec(props)?.[1];
-        if (n) outputs[n] = value;
-        return;
-      }
-      if (name === "error" || name === "warning" || name === "notice") {
+      if (name === "set-output" || name === "save-state") {
+        // Security review M1: GitHub deprecated the stdout ::set-output:: / ::save-state:: commands, and workflow
+        // stdout is untrusted, so the runner does not act on them. The line stays visible as ordinary log data, and
+        // the runner warns once per step. Outputs and state come from the $GITHUB_OUTPUT and $GITHUB_STATE files.
+        const seen = `${place.key}#${no}`;
+        if (!warnedStdoutCommand.has(seen)) {
+          warnedStdoutCommand.add(seen);
+          emit({ type: "annotation", at: now(), job: place.key, step: no, level: "warning", message: `::${name}:: on stdout is ignored (GitHub deprecated it); write to the $GITHUB_${name === "set-output" ? "OUTPUT" : "STATE"} file instead`, source: "runner" });
+        }
+        // fall through: emit the raw line as log data
+      } else if (name === "error" || name === "warning" || name === "notice") {
         emit({ type: "annotation", at: now(), job: place.key, step: no, level: name, message: display(value), source: "workflow" });
       }
     }

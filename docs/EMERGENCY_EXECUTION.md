@@ -358,9 +358,13 @@ minikube -p gha-sec ssh -- sudo crictl inspecti -o go-template --template "{{ran
 #    different people, stand in for one (a real installation sets auth.oidc and auth.initialAdministrators).
 kubectl --context gha-sec create namespace gha-emergency
 kubectl --context gha-sec label namespace gha-emergency pod-security.kubernetes.io/enforce=restricted gha-emergency.github-actions-ui/dedicated=true
+# UI origin (security review M5): the executor must not serve the GitHub-token UI. Point it at the separate trusted
+# origin (the gha-ui chart), where the token is entered and snapshots are prepared; the executor serves only the
+# execution console. For a quick single-origin local demo use `--set ui.mode=bundled` instead (explicitly insecure).
 helm --kube-context gha-sec install gha-emergency charts/gha-emergency -n gha-emergency --set executor.image.tag=c1c2 --set runner.image.digest=sha256:<digest> `
   --set "auth.breakGlass.accounts[0].name=local-operator" --set "auth.breakGlass.accounts[0].roles[0]=operator" `
-  --set "auth.breakGlass.accounts[1].name=local-approver" --set "auth.breakGlass.accounts[1].roles[0]=approver"
+  --set "auth.breakGlass.accounts[1].name=local-approver" --set "auth.breakGlass.accounts[1].roles[0]=approver" `
+  --set ui.trustedUiUrl=https://gha-ui.example   # or: --set ui.mode=bundled  (single-origin local demo)
 
 # 3. Reach the executor, and read the break-glass credentials (see the chart's NOTES)
 kubectl --context gha-sec -n gha-emergency port-forward svc/gha-emergency 18094:8080
