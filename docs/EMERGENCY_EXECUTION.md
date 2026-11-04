@@ -348,9 +348,11 @@ podman build --ignorefile deploy/emergency/build.dockerignore -f deploy/emergenc
 podman build --ignorefile deploy/emergency/build.dockerignore -f deploy/emergency/Dockerfile --target runner   -t gha-emergency-runner:c1c2 .
 podman save --format oci-archive -o executor.tar localhost/gha-emergency-executor:c1c2; minikube -p gha-sec image load executor.tar
 podman save --format oci-archive -o runner.tar   localhost/gha-emergency-runner:c1c2;   minikube -p gha-sec image load runner.tar
-# Security review H4: runner Jobs are pinned to the runner image's digest as the node's runtime knows it. Read it on
-# the node (not from podman: a loaded archive can get a different digest) and pass it as runner.image.digest:
+# Security review H4/M7: both images are pinned to their digest as the node's runtime knows it (not from podman: a
+# loaded archive can get a different digest). Runner Jobs use runner.image.digest; the executor runs by
+# executor.image.digest so a mutable tag can't change what the privileged component runs. Read both on the node:
 minikube -p gha-sec ssh -- sudo crictl inspecti -o go-template --template "{{range .status.repoDigests}}{{.}} {{end}}" localhost/gha-emergency-runner:c1c2
+minikube -p gha-sec ssh -- sudo crictl inspecti -o go-template --template "{{range .status.repoDigests}}{{.}} {{end}}" localhost/gha-emergency-executor:c1c2
 
 # 2. A dedicated, restricted namespace, then install. No Secrets yet: the chart refuses any Secret that isn't bound,
 #    and a binding needs the digest of a snapshot that is prepared after installation.
@@ -361,7 +363,7 @@ kubectl --context gha-sec label namespace gha-emergency pod-security.kubernetes.
 # UI origin (security review M5): the executor must not serve the GitHub-token UI. Point it at the separate trusted
 # origin (the gha-ui chart), where the token is entered and snapshots are prepared; the executor serves only the
 # execution console. For a quick single-origin local demo use `--set ui.mode=bundled` instead (explicitly insecure).
-helm --kube-context gha-sec install gha-emergency charts/gha-emergency -n gha-emergency --set executor.image.tag=c1c2 --set runner.image.digest=sha256:<digest> `
+helm --kube-context gha-sec install gha-emergency charts/gha-emergency -n gha-emergency --set executor.image.digest=sha256:<executor-digest> --set runner.image.digest=sha256:<runner-digest> `
   --set "auth.breakGlass.accounts[0].name=local-operator" --set "auth.breakGlass.accounts[0].roles[0]=operator" `
   --set "auth.breakGlass.accounts[1].name=local-approver" --set "auth.breakGlass.accounts[1].roles[0]=approver" `
   --set ui.trustedUiUrl=https://gha-ui.example   # or: --set ui.mode=bundled  (single-origin local demo)

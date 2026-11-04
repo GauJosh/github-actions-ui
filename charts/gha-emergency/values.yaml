@@ -5,8 +5,13 @@
 executor:
   image:
     repository: localhost/gha-emergency-executor
-    tag: local
-    pullPolicy: IfNotPresent
+    # Required (security review M7): the executor image's digest as the cluster's nodes know it, e.g. sha256:4f1c...
+    # The executor is the privileged component (it creates Jobs, holds the service-account token and reads snapshots),
+    # so it is pinned to an immutable digest. A mutable tag with IfNotPresent could otherwise change what the executor
+    # runs, or leave a stale/pre-planted cached image running. Get the digest the same way as runner.image.digest
+    # (from the node's runtime, not from a local archive — see the README). The pull policy is IfNotPresent, safe
+    # because the reference is a digest.
+    digest: ""
   resources:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: 500m, memory: 512Mi }
@@ -27,6 +32,13 @@ runner:
   # Upper bound for any job or step timeout, and the Job's deadline (plus two minutes).
   maxMinutes: 60
   maxConcurrent: 2
+  # How much workflow log output the runner forwards, per step and for the whole execution (security review M6). A
+  # malicious step could otherwise flood the log so the authenticated control events (verification, network evidence
+  # and the final result) are pushed past the executor's 16 MiB log read or rotated out of the kubelet's log, hiding
+  # the real result. Keep the per-execution total well under the cluster's container-log size (kubelet default 10Mi)
+  # so the full signed stream is always retained. Characters (≈ bytes for ASCII).
+  maxStepLogBytes: 1048576     # 1 MiB per step
+  maxLogBytes: 4194304         # 4 MiB per execution
   # Finished Jobs are deleted after this; the executor archives their logs first when it sees them finish.
   ttlSecondsAfterFinished: 86400
   # How runner pods are isolated from the trusted executor (security review M4). The executor refuses to run without a
@@ -150,6 +162,39 @@ network:
 clusterChecks:
   enabled: true
   dedicatedLabel: gha-emergency.github-actions-ui/dedicated
+
+# Namespace resource bounds (security review L1). A ResourceQuota and a LimitRange are installed into the dedicated
+# namespace. The quota is the hard backstop behind the executor's concurrency check: even if that check races (two
+# starts admitted at once), the API server admits no more concurrent pods or CPU/memory than budgeted here. Finished
+# Job pods are terminal (Succeeded/Failed) and do not count against the pod/CPU/memory quota, so these bound how much
+# runs at once, not how many executions happen over time (the quota tracks pods, not Jobs, so finished Jobs lingering
+# until their TTL never exhaust it). They apply only to this release's namespace, which must already be labelled
+# pod-security.kubernetes.io/enforce=restricted and <clusterChecks.dedicatedLabel>=true before install (see the README).
+resourceQuota:
+  enabled: true
+  # Headroom in pods above the minimum (the executor plus runner.maxConcurrent runner pods) for the short-lived network
+  # canary pods and a rolling executor pod. Must be at least 2 (a network check runs a probe pod and a control pod).
+  # The pod cap is derived as 1 + runner.maxConcurrent + extraPods, so it always fits the legitimate workload.
+  extraPods: 4
+  # Total CPU and memory the namespace may request and limit at once. Defaults fit the default executor (0.5 CPU /
+  # 512Mi limit) plus runner.maxConcurrent runner pods (1 CPU / 1Gi each) plus canary headroom. Raise these if you
+  # raise runner.resources or runner.maxConcurrent, or legitimate runner pods will be refused by the quota (a clear
+  # admission error, not a silent weakening). Required when resourceQuota.enabled.
+  requestsCpu: "1"
+  requestsMemory: 1Gi
+  limitsCpu: "4"
+  limitsMemory: 5Gi
+
+# A LimitRange for the dedicated namespace (security review L1). Its per-container max equals the runner's cap, so it
+# matches — never conflicts with — the admission policy (security review H4); the executor, runner and canary all set
+# their own requests and limits, so the defaults below only ever apply to a stray pod that omits them (defense in
+# depth), never changing the governed pods. Disable only if the cluster provides an equivalent namespace LimitRange.
+limitRange:
+  enabled: true
+  defaultRequestCpu: 50m
+  defaultRequestMemory: 128Mi
+  defaultLimitCpu: 500m
+  defaultLimitMemory: 512Mi
 
 service:
   port: 8080

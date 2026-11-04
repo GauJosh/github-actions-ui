@@ -19,7 +19,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { evaluate, interpolate, interpolateString, parseCondition, stringify, truthy, type JobStatus } from "../../../src/emergency/expressions.ts";
@@ -43,6 +43,10 @@ export type RunnerConfig = {
   commands?: { bash: string; sh: string; python: string; node: string };
   /** Upper bound for any job or step timeout, in minutes. */
   maxMinutes?: number;
+  /** Security review M6: characters of workflow log output forwarded per step. Default 1 MiB. */
+  maxStepLogBytes?: number;
+  /** Security review M6: characters of workflow log output forwarded for the whole execution. Default 4 MiB. */
+  maxLogBytes?: number;
   /** Hosts checked (and expected to be unreachable) before execution. Empty: no check. */
   networkProbe?: string[];
   basePath?: string;
@@ -58,15 +62,35 @@ type JobRecord = { result: StepResult; outputs: Record<string, string> };
  * best-effort and line-oriented: it cannot catch a secret that was hashed, encrypted, reversed, split across newlines,
  * or otherwise transformed. The real protections are not packaging secret values (C1/H1) and restricting log access.
  */
+// Security review F1/M6: bounds on what workflow ::add-mask:: can register. Without them a flood of mask commands
+// grows the runner's memory and makes masking (which runs on every emitted line) progressively slower. Secret values
+// from the bindings are added first, at startup, and are few, so these caps only ever limit workflow-registered masks.
+const MAX_MASK_ENTRIES = 1024; // distinct registered strings (a value, its line splits and their Base64 encodings)
+const MAX_MASK_BYTES = 256 * 1024; // total characters stored across all registered masks
+
 export class Masker {
   private values = new Set<string>();
-  add(value: string) {
+  private storedBytes = 0;
+  /**
+   * Registers a value (and its deterministic encodings) to redact. Returns false once a cap is reached and something
+   * could not be stored, so the caller can warn once and stop trusting that later values are masked.
+   */
+  add(value: string): boolean {
+    let accepted = true;
     for (const v of [value, ...value.split(/\r?\n/)]) {
       const t = v.trim();
       if (t.length === 0) continue;
-      this.values.add(v);
-      for (const form of [v, t]) for (const enc of encodings(form)) this.values.add(enc);
+      for (const form of [v, ...encodings(v), ...encodings(t)]) {
+        if (this.values.has(form)) continue;
+        if (this.values.size >= MAX_MASK_ENTRIES || this.storedBytes + form.length > MAX_MASK_BYTES) {
+          accepted = false;
+          continue;
+        }
+        this.values.add(form);
+        this.storedBytes += form.length;
+      }
     }
+    return accepted;
   }
   apply(text: string): string {
     let out = text;
@@ -75,6 +99,92 @@ export class Masker {
     return out;
   }
 }
+
+/**
+ * Security review M6: a budget for the workflow-produced log output the runner forwards, per step and for the whole
+ * execution. Without it a step could flood the runner's stdout so that the authenticated control events — the public
+ * key line, the `verify` and `network` evidence and the final `execution-end` — are pushed past the executor's bounded
+ * pod-log read, or rotated out of the kubelet's log, hiding the real result. Only workflow content (step stdout and
+ * stderr, step summaries, and the workflow's own `::error/warning/notice::` annotations) is charged here; the runner's
+ * own control and verification events are few and small and are never charged, so the result channel can't be crowded
+ * out by a flood on the log channel. Lengths are measured in characters, which equal bytes for the ASCII that fills a
+ * flood; the point is a hard bound, not an exact byte count.
+ */
+export class LogBudget {
+  private readonly perStep: number;
+  private readonly perExecution: number;
+  private stepUsed = 0;
+  private totalUsed = 0;
+  private stepCut = false;
+  private execCut = false;
+  constructor(perStep: number, perExecution: number) {
+    this.perStep = perStep;
+    this.perExecution = perExecution;
+  }
+  /** Begin charging a new step; its per-step allowance is restored (the per-execution total is not). */
+  startStep(): void {
+    this.stepUsed = 0;
+    this.stepCut = false;
+  }
+  /**
+   * How many characters of a `length`-long piece of workflow log content may be forwarded: `length` while within both
+   * budgets, fewer when a budget is nearly spent, 0 once one is reached. `notice`, present only the first time each
+   * budget is hit (per step, then per execution), is a line for the runner to record as its own annotation.
+   */
+  take(length: number): { allow: number; notice?: string } {
+    if (this.totalUsed >= this.perExecution) {
+      const notice = this.execCut ? undefined : `Log output suppressed: this execution reached its log limit of ${this.perExecution} characters (security review M6)`;
+      this.execCut = true;
+      return { allow: 0, notice };
+    }
+    if (this.stepUsed >= this.perStep) {
+      const notice = this.stepCut ? undefined : `Log output truncated: this step reached its log limit of ${this.perStep} characters (security review M6)`;
+      this.stepCut = true;
+      return { allow: 0, notice };
+    }
+    const allow = Math.min(length, this.perStep - this.stepUsed, this.perExecution - this.totalUsed);
+    this.stepUsed += allow;
+    this.totalUsed += allow;
+    if (allow < length && !this.stepCut) {
+      this.stepCut = true;
+      return { allow, notice: `Log output truncated: this step reached its log limit of ${this.perStep} characters (security review M6)` };
+    }
+    return { allow };
+  }
+}
+
+// Security review F4/M6: the log-budget sizes must be real, finite, positive and sane. A malformed value (NaN,
+// Infinity, 0, negative, or enormous) would otherwise disable the per-line buffer bound or the log limits. Validated
+// at startup, where both the runner and the executor fail closed on a bad value. The defaults match the chart
+// (charts/gha-emergency/values.yaml), so the chart and runtime defaults stay consistent.
+export const LOG_BUDGET = {
+  defaultStepBytes: 1024 * 1024, // 1 MiB per step
+  defaultExecutionBytes: 4 * 1024 * 1024, // 4 MiB per execution
+  minBytes: 1024, // 1 KiB floor: below this logging is useless and the value is almost certainly a misconfiguration
+  maxBytes: 1024 * 1024 * 1024, // 1 GiB ceiling: above this the per-line buffer bound stops being meaningful
+};
+
+/** Throws (fail closed) unless both budgets are whole numbers of bytes within [minBytes, maxBytes] (F4/M6). */
+export function validateLogBudget(maxStepLogBytes: number, maxLogBytes: number): void {
+  for (const [name, v] of [["maxStepLogBytes", maxStepLogBytes], ["maxLogBytes", maxLogBytes]] as const) {
+    if (!Number.isInteger(v) || v < LOG_BUDGET.minBytes || v > LOG_BUDGET.maxBytes) {
+      throw new Error(`${name} must be a whole number of bytes between ${LOG_BUDGET.minBytes} and ${LOG_BUDGET.maxBytes} (got ${v}); security review F4/M6`);
+    }
+  }
+}
+
+// Security review F2/M6: workflow command files ($GITHUB_OUTPUT/$GITHUB_ENV/$GITHUB_STATE/$GITHUB_PATH) are read under
+// strict caps, never whole, so a huge file can neither exhaust the runner's memory nor inflate the authenticated
+// step/job control events the outputs travel in. These bounds are independent of the log budget and apply to
+// structural data only; $GITHUB_STEP_SUMMARY is ordinary log content and is bounded by the log budget instead.
+export const COMMAND_FILE_LIMITS = {
+  maxFileBytes: 1024 * 1024, // 1 MiB read cap per command file
+  maxEntryBytes: 64 * 1024, // 64 KiB per name=value / heredoc value / PATH line
+  maxEntries: 2048, // entries kept per command file
+};
+const MAX_COMMAND_FILE_BYTES = COMMAND_FILE_LIMITS.maxFileBytes;
+const MAX_COMMAND_ENTRY_BYTES = COMMAND_FILE_LIMITS.maxEntryBytes;
+const MAX_COMMAND_ENTRIES = COMMAND_FILE_LIMITS.maxEntries;
 
 /** Standard and URL-safe Base64 of a value, with and without padding; only forms long enough not to over-redact. */
 function encodings(value: string): string[] {
@@ -114,7 +224,16 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
   const masker = new Masker();
   // Steps that printed a deprecated ::set-output::/::save-state:: command, so the runner warns only once each (M1).
   const warnedStdoutCommand = new Set<string>();
+  // Security review F1/M6: warn once when a workflow's ::add-mask:: flood hits the mask-registration cap.
+  let maskLimitWarned = false;
   const maxMinutes = config.maxMinutes ?? 60;
+  // Security review M6: bound the workflow log output the runner forwards, so a flood can't push the authenticated
+  // control events out of the executor's log read or the kubelet's retained log. Control events are never charged.
+  // F4/M6: the sizes are validated (fail closed) so a malformed value can't disable the buffer bound or the limits.
+  const maxStepLogBytes = config.maxStepLogBytes ?? LOG_BUDGET.defaultStepBytes;
+  const maxLogBytes = config.maxLogBytes ?? LOG_BUDGET.defaultExecutionBytes;
+  validateLogBudget(maxStepLogBytes, maxLogBytes);
+  const logBudget = new LogBudget(maxStepLogBytes, maxLogBytes);
   const cmd = config.commands ?? { bash: "bash", sh: "sh", python: "python3", node: "node" };
   // Security review H3: everything the runner emits from workflow-controlled text is masked, then sanitized
   // (control characters, ANSI escapes, bidirectional overrides made visible). Data passed between steps and jobs
@@ -122,9 +241,24 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
   const display = (text: string) => sanitizeText(masker.apply(text));
   const displayMap = (m: Record<string, string>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [sanitizeText(k), display(v)]));
   const log = (text: string, job?: string, step?: number, stream: "stdout" | "stderr" | "runner" = "runner") => emit({ type: "log", at: now(), job, step, stream, text: display(text) });
+  // Security review F3/M6: mask (and sanitize) the full piece of workflow text BEFORE truncating it to the log budget,
+  // so a secret straddling a truncation boundary can never leave an unmasked prefix in the forwarded output.
+  const maskTruncate = (text: string, allow: number): string => {
+    const shown = display(text);
+    return allow < text.length ? shown.slice(0, allow) : shown;
+  };
   const end = (result: StepResult, reason?: string, outputs: Record<string, string> = {}) => {
     emit({ type: "execution-end", at: now(), result, durationMs: Date.now() - started, outputs: displayMap(outputs), reason: reason && display(reason) });
     return result;
+  };
+  // Security review M6: when the log budget first cuts a step's or the execution's output, the runner says so once, on
+  // its own (unbudgeted) annotation channel, so the reader knows output below was dropped — not that the run stopped.
+  const budgetNotice = (notice: string | undefined, job: string, step: number) => {
+    if (notice) emit({ type: "annotation", at: now(), job, step, level: "warning", message: notice, source: "runner" });
+  };
+  // Security review F2/M6: the runner says, on its own channel, when a workflow command file hit a size/entry cap.
+  const commandFileNotice = (warning: string | undefined, job: string, step: number) => {
+    if (warning) emit({ type: "annotation", at: now(), job, step, level: "warning", message: warning, source: "runner" });
   };
 
   // 1. Secrets first, so nothing below can print one unmasked.
@@ -416,7 +550,10 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
     const extra = { ...inputEnv, GITHUB_ACTION_PATH: dir, GITHUB_ACTION_REPOSITORY: entry.root === WORKSPACE ? "" : entry.root.split("/").slice(1, 3).join("/") };
     const r = await runProcess([cmd.node, main], place.workspace, { ...env, ...extra }, state, place, no, id, timeoutAt, stateFile);
     if (action.post) {
-      const savedState = existsSync(stateFile) ? parseFileCommands(readFileSync(stateFile, "utf8")) : {};
+      // Security review F2/M6: $GITHUB_STATE is a workflow command file too; read it under the same caps (never whole).
+      const stateRead: { entries: Record<string, string>; warning?: string } = existsSync(stateFile) ? readCommandEntries(stateFile, "GITHUB_STATE") : { entries: {} };
+      const savedState = stateRead.entries;
+      commandFileNotice(stateRead.warning, place.key, no);
       const postIf = action.postIf ?? "always()";
       const post = join(dir, ...action.post.replace(/^\.\//, "").split("/"));
       state.posts.push(async () => {
@@ -451,6 +588,7 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
 
   /** Runs one process with GitHub's file commands and workflow-command parsing; masks everything it emits. */
   const runProcess = async (argv: string[], cwd: string, env: Record<string, string>, state: StepState, place: Place, no: number, id: string | undefined, timeoutAt: number, stateFile?: string): Promise<StepRun> => {
+    logBudget.startStep(); // Security review M6: each step that produces output gets a fresh per-step log allowance.
     const files = Object.fromEntries(["output", "env", "path", "state", "summary"].map((n) => [n, n === "state" && stateFile ? stateFile : join(place.temp, `${n}-${randomUUID()}`)]));
     for (const f of Object.values(files)) writeFileSync(f, "", { flag: "a" });
     const processEnv: Record<string, string> = {
@@ -512,6 +650,12 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
           const parts = buf.split(/\r?\n/);
           buf = parts.pop()!;
           for (const line of parts) handleLine(line, stream, place, no);
+          // Security review M6: a step can print without newlines; flush an over-long pending line so the buffer (and
+          // any single log event) can't grow without bound. The budget drops what it must once the line is handled.
+          if (buf.length > maxStepLogBytes) {
+            handleLine(buf, stream, place, no);
+            buf = "";
+          }
         };
       };
       const out = lines("stdout");
@@ -529,12 +673,26 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
         done({ code });
       });
     });
-    Object.assign(outputs, parseFileCommands(readFileSync(files.output!, "utf8")));
-    const envAdds = parseFileCommands(readFileSync(files.env!, "utf8"));
-    Object.assign(state.env, envAdds);
-    for (const p of readFileSync(files.path!, "utf8").split(/\r?\n/).filter(Boolean)) state.path.unshift(p);
-    const summary = readFileSync(files.summary!, "utf8");
-    if (summary.trim()) log(`Step summary:\n${summary.trimEnd()}`, place.key, no);
+    // Security review F2/M6: read the workflow command files under strict, independent caps (never whole), so a huge
+    // file can neither exhaust the runner's memory nor inflate the authenticated step/job events the outputs ride in.
+    const outputRead = readCommandEntries(files.output!, "GITHUB_OUTPUT");
+    Object.assign(outputs, outputRead.entries);
+    commandFileNotice(outputRead.warning, place.key, no);
+    const envRead = readCommandEntries(files.env!, "GITHUB_ENV");
+    Object.assign(state.env, envRead.entries);
+    commandFileNotice(envRead.warning, place.key, no);
+    const pathRead = readPathEntries(files.path!);
+    for (const p of pathRead.paths) state.path.unshift(p);
+    commandFileNotice(pathRead.warning, place.key, no);
+    // GITHUB_STEP_SUMMARY is log content: read under the command-file cap (never whole), then forward it through the
+    // log budget, masking before truncation (F2/F3/M6), so it can neither exhaust memory nor flood the executor's log.
+    const summary = readCapped(files.summary!, MAX_COMMAND_FILE_BYTES + 1);
+    if (summary.truncated) commandFileNotice(`GITHUB_STEP_SUMMARY: over ${MAX_COMMAND_FILE_BYTES} bytes; the excess was dropped (security review M6)`, place.key, no);
+    if (summary.text.trim()) {
+      const { allow, notice } = logBudget.take(summary.text.length);
+      if (allow > 0) emit({ type: "log", at: now(), job: place.key, step: no, stream: "runner", text: `Step summary:\n${maskTruncate(summary.text, allow).trimEnd()}` });
+      budgetNotice(notice, place.key, no);
+    }
     const outcome: StepResult = result.reason === "step timeout reached" ? "cancelled" : result.code === 0 ? "success" : "failure";
     return { outcome: outcome === "cancelled" ? "failure" : outcome, exitCode: result.code, outputs, reason: result.reason ?? (result.code === 0 ? undefined : `exit code ${result.code}`) };
   };
@@ -544,8 +702,16 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
     if (cmdMatch) {
       const [, name, value = ""] = cmdMatch as unknown as [string, string, string?];
       if (name === "add-mask") {
-        masker.add(value);
-        log("::add-mask::***", place.key, no, stream);
+        // Security review F1/M6: register the mask under the Masker's caps, and warn once if the cap is reached.
+        if (!masker.add(value) && !maskLimitWarned) {
+          maskLimitWarned = true;
+          emit({ type: "annotation", at: now(), job: place.key, step: no, level: "warning", message: "Mask registration limit reached; further ::add-mask:: commands are ignored (security review F1/M6)", source: "runner" });
+        }
+        // The acknowledgement line is workflow-triggered content, so charge it to the log budget like any other line;
+        // a flood of ::add-mask:: commands can no longer bypass the per-step and per-execution limits.
+        const { allow, notice } = logBudget.take("::add-mask::***".length);
+        if (allow > 0) log("::add-mask::***", place.key, no, stream);
+        budgetNotice(notice, place.key, no);
         return;
       }
       if (name === "set-output" || name === "save-state") {
@@ -559,10 +725,19 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
         }
         // fall through: emit the raw line as log data
       } else if (name === "error" || name === "warning" || name === "notice") {
-        emit({ type: "annotation", at: now(), job: place.key, step: no, level: name, message: display(value), source: "workflow" });
+        // Security review M6: a workflow annotation is workflow content; charge it to the log budget so a flood of
+        // ::notice:: lines can't crowd out the control events either.
+        const { allow, notice } = logBudget.take(value.length);
+        if (allow > 0) emit({ type: "annotation", at: now(), job: place.key, step: no, level: name, message: maskTruncate(value, allow), source: "workflow" });
+        budgetNotice(notice, place.key, no);
       }
     }
-    emit({ type: "log", at: now(), job: place.key, step: no, stream, text: display(line) });
+    // Security review M6: step stdout/stderr is workflow content. Forward only what the per-step and per-execution log
+    // budgets allow; beyond that, drop it (with a one-time runner notice) so the authenticated result channel survives.
+    // F3/M6: mask before truncating (maskTruncate), so a secret at the boundary can't leak an unmasked prefix.
+    const { allow, notice } = logBudget.take(line.length);
+    if (allow > 0) emit({ type: "log", at: now(), job: place.key, step: no, stream, text: maskTruncate(line, allow) });
+    budgetNotice(notice, place.key, no);
   };
 
   const restore = (f: FileEntry, workspace: string) => {
@@ -602,6 +777,82 @@ export async function runSnapshot(config: RunnerConfig): Promise<StepResult> {
   } catch (error) {
     return end("failure", `Runner error: ${(error as Error).message}`);
   }
+}
+
+/**
+ * Reads at most `max` bytes from the start of a file, in bounded chunks, so a huge workflow-written file is never
+ * loaded whole (security review F2/M6). `truncated` reports whether the file was longer than `max`.
+ */
+function readCapped(path: string, max: number): { text: string; truncated: boolean } {
+  const fd = openSync(path, "r");
+  try {
+    const chunk = Buffer.alloc(Math.min(max, 64 * 1024));
+    const parts: Buffer[] = [];
+    let total = 0;
+    while (total < max) {
+      const n = readSync(fd, chunk, 0, Math.min(chunk.length, max - total), total);
+      if (n === 0) break;
+      parts.push(Buffer.from(chunk.subarray(0, n)));
+      total += n;
+    }
+    // One extra byte, read but not kept, tells us whether the file was longer than the cap.
+    const truncated = readSync(fd, Buffer.alloc(1), 0, 1, total) > 0;
+    return { text: Buffer.concat(parts).toString("utf8"), truncated };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Reads a GitHub command file ($GITHUB_OUTPUT/$GITHUB_ENV/$GITHUB_STATE) under strict caps (security review F2/M6):
+ * at most MAX_COMMAND_FILE_BYTES read from disk, at most MAX_COMMAND_ENTRIES kept, each value capped at
+ * MAX_COMMAND_ENTRY_BYTES. Returns the bounded entries and a single warning summarising any cap that was hit.
+ */
+export function readCommandEntries(path: string, label: string): { entries: Record<string, string>; warning?: string } {
+  const { text, truncated } = readCapped(path, MAX_COMMAND_FILE_BYTES + 1);
+  const parsed = parseFileCommands(truncated ? text.slice(0, MAX_COMMAND_FILE_BYTES) : text);
+  const warnings: string[] = [];
+  if (truncated) warnings.push(`over ${MAX_COMMAND_FILE_BYTES} bytes; the excess was dropped`);
+  const entries: Record<string, string> = {};
+  let longEntry = false;
+  for (const [k, v] of Object.entries(parsed)) {
+    if (Object.keys(entries).length >= MAX_COMMAND_ENTRIES) {
+      warnings.push(`more than ${MAX_COMMAND_ENTRIES} entries; the rest were dropped`);
+      break;
+    }
+    if (v.length > MAX_COMMAND_ENTRY_BYTES) {
+      entries[k] = v.slice(0, MAX_COMMAND_ENTRY_BYTES);
+      if (!longEntry) {
+        longEntry = true;
+        warnings.push(`at least one entry over ${MAX_COMMAND_ENTRY_BYTES} bytes; truncated`);
+      }
+    } else entries[k] = v;
+  }
+  return { entries, warning: warnings.length ? `${label}: ${warnings.join("; ")} (security review M6)` : undefined };
+}
+
+/** Reads $GITHUB_PATH under the same caps; returns the path entries to prepend and any warning (F2/M6). */
+export function readPathEntries(path: string): { paths: string[]; warning?: string } {
+  const { text, truncated } = readCapped(path, MAX_COMMAND_FILE_BYTES + 1);
+  const warnings: string[] = [];
+  if (truncated) warnings.push(`over ${MAX_COMMAND_FILE_BYTES} bytes; the excess was dropped`);
+  const paths: string[] = [];
+  let longEntry = false;
+  for (const p of (truncated ? text.slice(0, MAX_COMMAND_FILE_BYTES) : text).split(/\r?\n/).filter(Boolean)) {
+    if (paths.length >= MAX_COMMAND_ENTRIES) {
+      warnings.push(`more than ${MAX_COMMAND_ENTRIES} entries; the rest were dropped`);
+      break;
+    }
+    if (p.length > MAX_COMMAND_ENTRY_BYTES) {
+      if (!longEntry) {
+        longEntry = true;
+        warnings.push(`at least one entry over ${MAX_COMMAND_ENTRY_BYTES} bytes; skipped`);
+      }
+      continue;
+    }
+    paths.push(p);
+  }
+  return { paths, warning: warnings.length ? `GITHUB_PATH: ${warnings.join("; ")} (security review M6)` : undefined };
 }
 
 /** Kubernetes Secret volumes hold each key as a symlink next to "..data" entries; only plain names are secrets. */

@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runSnapshot } from "../../deploy/emergency/runner/engine.ts";
+import { COMMAND_FILE_LIMITS, runSnapshot } from "../../deploy/emergency/runner/engine.ts";
 import { createStore } from "../../deploy/emergency/executor/store.ts";
 import { summarize, type ExecutionView, type RunnerEvent } from "../../src/emergency/events.ts";
 import { createMemoryReader, type MemoryRepo } from "../../src/emergency/memory-reader.ts";
@@ -20,7 +20,7 @@ export const SECRET = "demo-signing-key-7f3a91c2";
 
 export type Scenario = { name: string; view: ExecutionView; events: RunnerEvent[]; result: string; failures: string[] };
 
-async function execute(repoRoot: string, repos: Record<string, MemoryRepo>, opts: { secret?: string; tamper?: boolean; inputs?: Record<string, string>; extraSecrets?: Record<string, string>; forgeStripErrors?: boolean }) {
+async function execute(repoRoot: string, repos: Record<string, MemoryRepo>, opts: { secret?: string; tamper?: boolean; inputs?: Record<string, string>; extraSecrets?: Record<string, string>; forgeStripErrors?: boolean; logCaps?: { perStep: number; total: number } }) {
   const base = mkdtempSync(join(tmpdir(), "gha-emergency-"));
   try {
     const { manifest, contents } = await prepareSnapshot(createMemoryReader(repos), { repository: DEMO_REPO, ref: "main", workflows: [".github/workflows/release.yml"], name: "runner check", expiresInDays: 1 });
@@ -65,6 +65,8 @@ async function execute(repoRoot: string, repos: Record<string, MemoryRepo>, opts
       execution: { id: "0123456789abcdef", workflow: ".github/workflows/release.yml", digest, inputs: opts.inputs ?? { version: "2.0.1" }, variables: {} },
       emit: (e) => events.push(JSON.parse(JSON.stringify(e)) as RunnerEvent),
       maxMinutes: 5,
+      maxStepLogBytes: opts.logCaps?.perStep,
+      maxLogBytes: opts.logCaps?.total,
       networkProbe: [],
     });
     return { result, events, view: summarize(events) };
@@ -197,8 +199,146 @@ export async function runChecks(repoRoot: string): Promise<Scenario[]> {
     check(s, s.view.annotations.some((a) => a.message === "annotated ***"), `annotation masked (got ${JSON.stringify(s.view.annotations.map((a) => a.message))})`);
     scenarios.push(s);
   }
+  {
+    // Security review M6: a step floods its stdout to hide the real result. The runner caps the workflow log output it
+    // forwards per step and per execution, so the flood is truncated (with a runner notice), a later step still logs,
+    // and the final result is recorded. Small caps here keep the check fast; the defaults are 1 MiB / 4 MiB.
+    const repos = demoRepos(repoRoot);
+    repos[DEMO_REPO]!.files[".github/workflows/release.yml"] = M6_WORKFLOW;
+    const r = await execute(repoRoot, repos, { logCaps: { perStep: 2000, total: 8000 } });
+    const s: Scenario = { name: "a log flood is capped; the result and later steps survive (review M6)", ...r, failures: [] };
+    const lines = s.view.logs.map((l) => l.text);
+    const floodLines = lines.filter((l) => l.startsWith("FLOOD-"));
+    const floodChars = floodLines.reduce((n, l) => n + l.length, 0);
+    check(s, s.result === "success", `result success (got ${s.result}: ${s.view.reason ?? ""})`);
+    check(s, s.events.at(-1)?.type === "execution-end", `the final result is still recorded (last event ${s.events.at(-1)?.type})`);
+    check(s, floodLines.length < 500 && floodChars <= 2000 + 80, `the flood step's forwarded log is capped (${floodLines.length} lines, ${floodChars} chars)`);
+    check(s, s.view.annotations.some((a) => a.source === "runner" && /truncated.*M6/.test(a.message)), `a runner notice records the truncation (got ${JSON.stringify(s.view.annotations.filter((a) => a.source === "runner").map((a) => a.message))})`);
+    check(s, lines.includes("AFTER_MARKER"), "a step after the flood still has its output (the per-step budget reset)");
+    scenarios.push(s);
+  }
+  {
+    // Security review F1/M6: a step floods ::add-mask:: commands. The acknowledgement lines are now charged to the log
+    // budget (so they can't bypass it and crowd out the control events), the mask registry is capped (one warning,
+    // then further registrations ignored), and the real result and a later step still come through.
+    const repos = demoRepos(repoRoot);
+    repos[DEMO_REPO]!.files[".github/workflows/release.yml"] = F1_WORKFLOW;
+    const r = await execute(repoRoot, repos, { logCaps: { perStep: 2000, total: 8000 } });
+    const s: Scenario = { name: "::add-mask:: flooding is budgeted and the mask registry is capped (review F1)", ...r, failures: [] };
+    const acks = s.view.logs.filter((l) => l.text === "::add-mask::***");
+    check(s, s.result === "success", `result success (got ${s.result}: ${s.view.reason ?? ""})`);
+    check(s, s.events.at(-1)?.type === "execution-end", `the final result is still recorded (last event ${s.events.at(-1)?.type})`);
+    check(s, acks.length * "::add-mask::***".length <= 2000 + 80, `add-mask acknowledgements are bounded by the log budget (${acks.length} lines)`);
+    check(s, s.view.annotations.some((a) => a.source === "runner" && /Mask registration limit/.test(a.message)), `the mask-registration cap is reported once (got ${JSON.stringify(s.view.annotations.filter((a) => a.source === "runner").map((a) => a.message))})`);
+    check(s, s.view.logs.some((l) => l.text === "AFTER_MASK_MARKER"), "a step after the flood still has its output");
+    scenarios.push(s);
+  }
+  {
+    // Security review F2/M6: a step writes a huge $GITHUB_OUTPUT. The runner reads it under a cap (never whole), bounds
+    // the entry, warns, and the authenticated step/job events stay small — the result still comes through.
+    const repos = demoRepos(repoRoot);
+    repos[DEMO_REPO]!.files[".github/workflows/release.yml"] = F2_WORKFLOW;
+    const r = await execute(repoRoot, repos, {});
+    const s: Scenario = { name: "a huge GITHUB_OUTPUT is bounded, not forwarded whole (review F2)", ...r, failures: [] };
+    const step = s.view.jobs[0]?.steps.find((x) => x.name === "bigoutput");
+    check(s, s.result === "success", `result success (got ${s.result}: ${s.view.reason ?? ""})`);
+    check(s, (step?.outputs.big?.length ?? 0) === COMMAND_FILE_LIMITS.maxEntryBytes, `the output entry is capped (got ${step?.outputs.big?.length} chars)`);
+    check(s, s.view.annotations.some((a) => a.source === "runner" && /GITHUB_OUTPUT.*bytes/.test(a.message)), `a runner notice records the cap (got ${JSON.stringify(s.view.annotations.filter((a) => a.source === "runner").map((a) => a.message))})`);
+    check(s, JSON.stringify(s.events).length < 256 * 1024, `the authenticated event stream stays bounded (${JSON.stringify(s.events).length} bytes)`);
+    scenarios.push(s);
+  }
+  {
+    // Security review F3/M6: a secret is positioned to straddle a truncation boundary. Because masking happens before
+    // truncation, no unmasked prefix of the secret can be forwarded — once at the per-step limit, once at the
+    // per-execution limit. The secret is a harmless, distinctive test value.
+    const prefixLeak = (s: Scenario) => {
+      const blob = JSON.stringify(s.events);
+      check(s, s.result === "success", `result success (got ${s.result}: ${s.view.reason ?? ""})`);
+      check(s, blob.includes("xxxxxxxx"), "the padding was forwarded, so truncation happened at the secret");
+      let leaked: string | undefined;
+      for (let n = 6; n <= STRADDLE_SECRET.length; n++) if (blob.includes(STRADDLE_SECRET.slice(0, n))) leaked = STRADDLE_SECRET.slice(0, n);
+      check(s, leaked === undefined, `no unmasked prefix of the secret appears (found ${JSON.stringify(leaked)})`);
+    };
+    for (const [where, caps] of [
+      ["per-step", { perStep: 2000, total: 1_000_000 }],
+      ["per-execution", { perStep: 1_000_000, total: 2000 }],
+    ] as const) {
+      const repos = demoRepos(repoRoot);
+      repos[DEMO_REPO]!.files[".github/workflows/release.yml"] = F3_WORKFLOW;
+      const r = await execute(repoRoot, repos, { secret: STRADDLE_SECRET, logCaps: caps });
+      const s: Scenario = { name: `a secret straddling the ${where} log limit is masked, not leaked as a prefix (review F3)`, ...r, failures: [] };
+      prefixLeak(s);
+      scenarios.push(s);
+    }
+  }
   return scenarios;
 }
+
+// Security review F1: a flood of ::add-mask:: commands, then a marker step. The runner must budget the acknowledgement
+// lines, cap the mask registry (warning once), and still record the marker and the execution result.
+const F1_WORKFLOW = `on:
+  workflow_dispatch: {}
+jobs:
+  masks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: flood-masks
+        run: |
+          for i in $(seq 1 5000); do echo "::add-mask::mask-value-number-$i"; done
+      - name: after
+        run: echo AFTER_MASK_MARKER
+`;
+
+// Security review F2: a step writes a multi-megabyte value to $GITHUB_OUTPUT. The runner must read it under a cap,
+// bound the entry, and keep the authenticated events small. The value is harmless filler.
+const F2_WORKFLOW = `on:
+  workflow_dispatch: {}
+jobs:
+  out:
+    runs-on: ubuntu-latest
+    steps:
+      - id: bigoutput
+        name: bigoutput
+        run: |
+          {
+            echo "big<<EOF"
+            head -c 3000000 </dev/zero | tr '\\0' y
+            echo ""
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+`;
+
+// Security review F3: the step prints 1990 bytes of padding then the secret on one line, so the secret crosses a
+// 2000-byte truncation boundary. Masking before truncation must leave no unmasked prefix of the secret.
+const STRADDLE_SECRET = "Zx9Qvk2mPLsupersecrettoken0123456789wxyz";
+const F3_WORKFLOW = `on:
+  workflow_dispatch: {}
+jobs:
+  straddle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: straddle
+        env:
+          KEY: \${{ secrets.DEMO_SIGNING_KEY }}
+        run: |
+          pad=$(head -c 1990 </dev/zero | tr '\\0' x)
+          printf '%s%s\\n' "$pad" "$KEY"
+`;
+
+// Security review M6: the first step prints far more than the per-step log budget; the second prints one marker line.
+// The runner must cap the flood yet still record the second step's output and the execution's result.
+const M6_WORKFLOW = `on:
+  workflow_dispatch: {}
+jobs:
+  flood:
+    runs-on: ubuntu-latest
+    steps:
+      - name: flood
+        run: |
+          for i in $(seq 1 500); do printf 'FLOOD-%04d-wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\\n' "$i"; done
+      - name: after
+        run: echo AFTER_MARKER
+`;
 
 // Security review M2: the step echoes its secret raw and Base64-encoded, to stdout, stderr, a step output and an
 // annotation. BEGIN/END frame the non-secret output that must stay readable. The secret is a harmless test value.

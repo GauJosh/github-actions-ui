@@ -77,6 +77,9 @@ export type ExecutorConfig = {
   isolation: RunnerIsolation;
   resources: { cpu: string; memory: string; scratch: string };
   maxMinutes: number;
+  /** Security review M6: characters of workflow log output the runner forwards, per step and per execution. */
+  maxStepLogBytes: number;
+  maxLogBytes: number;
   maxConcurrent: number;
   ttlSecondsAfterFinished: number;
   /** The Secret that holds break-glass credentials (formerly the operator token): never mountable by an execution. */
@@ -335,6 +338,8 @@ export function createApi(deps: {
       isolation: config.isolation,
       resources: config.resources,
       maxMinutes: config.maxMinutes,
+      maxStepLogBytes: config.maxStepLogBytes,
+      maxLogBytes: config.maxLogBytes,
       ttlSecondsAfterFinished: config.ttlSecondsAfterFinished,
     });
     store.saveExecution(started);

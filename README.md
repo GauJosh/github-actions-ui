@@ -331,14 +331,14 @@ The outline:
 kubectl create namespace gha-emergency
 kubectl label namespace gha-emergency pod-security.kubernetes.io/enforce=restricted gha-emergency.github-actions-ui/dedicated=true
 helm install gha-emergency charts/gha-emergency -n gha-emergency \
-  --set executor.image.tag=<tag> --set runner.image.digest=sha256:<digest> \
+  --set executor.image.digest=sha256:<executor-digest> --set runner.image.digest=sha256:<runner-digest> \
   --set auth.oidc.issuer=<issuer URL> --set auth.oidc.clientId=<client ID> \
   --set auth.oidc.redirectUri=https://<host>/api/emergency/auth/callback \
   --set "auth.initialAdministrators[0].issuer=<issuer URL>" --set "auth.initialAdministrators[0].subject=<your subject>" \
   --set ui.trustedUiUrl=https://<trusted-gha-ui-host>
 ```
 
-Secrets for snapshots are created and bound to snapshot digests after preparation, with `secretBindings`. The full tested sequence is in [Run the MVP locally](docs/EMERGENCY_EXECUTION.md#10-run-the-mvp-locally-windows-with-podman-and-minikube-as-tested): building and loading the images, finding the runner's digest, break-glass accounts for a cluster without an identity provider, binding a Secret, and migrating from the old shared operator token.
+Secrets for snapshots are created and bound to snapshot digests after preparation, with `secretBindings`. The full tested sequence is in [Run the MVP locally](docs/EMERGENCY_EXECUTION.md#10-run-the-mvp-locally-windows-with-podman-and-minikube-as-tested): building and loading the images, finding both images' digests (executor and runner), break-glass accounts for a cluster without an identity provider, binding a Secret, and migrating from the old shared operator token.
 
 ## Security and privacy
 

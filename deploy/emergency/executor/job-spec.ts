@@ -108,6 +108,9 @@ export type JobSpecInput = PodBase & {
   snapshotSubPath: string;
   resources: { cpu: string; memory: string; scratch: string };
   maxMinutes: number;
+  /** Security review M6: characters of workflow log output the runner forwards, per step and per execution. */
+  maxStepLogBytes: number;
+  maxLogBytes: number;
   ttlSecondsAfterFinished: number;
 };
 
@@ -188,6 +191,8 @@ export function buildJob(i: JobSpecInput) {
                 { name: "GHA_EMERGENCY_WORK_DIR", value: "/work" },
                 { name: "GHA_EMERGENCY_SECRETS_DIR", value: "/secrets" },
                 { name: "GHA_EMERGENCY_MAX_MINUTES", value: String(i.maxMinutes) },
+                { name: "GHA_EMERGENCY_MAX_STEP_LOG_BYTES", value: String(i.maxStepLogBytes) },
+                { name: "GHA_EMERGENCY_MAX_LOG_BYTES", value: String(i.maxLogBytes) },
                 { name: "GHA_EMERGENCY_NETWORK_PROBE", value: "github.com,api.github.com,codeload.github.com" },
               ],
               resources: { requests: { cpu: "100m", memory: "128Mi" }, limits: { cpu: i.resources.cpu, memory: i.resources.memory, "ephemeral-storage": i.resources.scratch } },

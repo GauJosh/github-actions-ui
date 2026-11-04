@@ -91,6 +91,12 @@ jobs:
       - run: helm template gha-ui charts/gha-ui --set basePath=/gha-ui/ > /dev/null
       # Security and wiring invariants of the rendered chart, with a self-test of each check.
       - run: node --disable-warning=ExperimentalWarning tools/chart/check-chart.ts
+      # Security review M7/H4: the emergency executor and runner images are pinned by digest, and the chart fails
+      # closed without them (rendering only, no cluster).
+      - run: node --disable-warning=ExperimentalWarning tools/chart/check-emergency-image.ts
+      # Security review L1: the dedicated namespace's ResourceQuota and LimitRange are sound and fail closed on an
+      # insufficient configuration (rendering only, no cluster).
+      - run: node --disable-warning=ExperimentalWarning tools/chart/check-emergency-quota.ts
 
   validate:
     name: Validate workflows and dependencies

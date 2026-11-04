@@ -13,7 +13,7 @@
 // the first line of the log, the private key never leaves this process (event-signer.ts; event-stream.ts has the
 // format and the executor's check). Workflow processes get a minimal environment of their own (engine.ts).
 import { statSync } from "node:fs";
-import { runSnapshot } from "./engine.ts";
+import { LOG_BUDGET, runSnapshot } from "./engine.ts";
 import { createEventWriter } from "./event-signer.ts";
 
 /** The execution's id, which the key line names; the rest of the configuration is read in config(). */
@@ -50,6 +50,11 @@ function config() {
     secretsDir: process.env.GHA_EMERGENCY_SECRETS_DIR ?? "/secrets",
     execution: { id: execution.id, workflow: execution.workflow, digest: execution.digest, inputs: execution.inputs ?? {}, variables: execution.variables ?? {} },
     maxMinutes: Number(process.env.GHA_EMERGENCY_MAX_MINUTES ?? 60),
+    // Security review M6/F4: how much workflow log output the runner forwards, per step and per execution. A malformed
+    // value becomes NaN here and is rejected by runSnapshot (validateLogBudget), which fails the run closed with a
+    // clear reason. Defaults come from the shared LOG_BUDGET so they stay consistent with the chart.
+    maxStepLogBytes: Number(process.env.GHA_EMERGENCY_MAX_STEP_LOG_BYTES ?? LOG_BUDGET.defaultStepBytes),
+    maxLogBytes: Number(process.env.GHA_EMERGENCY_MAX_LOG_BYTES ?? LOG_BUDGET.defaultExecutionBytes),
     networkProbe: (process.env.GHA_EMERGENCY_NETWORK_PROBE ?? "github.com,api.github.com,codeload.github.com").split(",").filter(Boolean),
     emit,
   };

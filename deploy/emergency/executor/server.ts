@@ -19,6 +19,7 @@ import { createBindingState, loadBindingsFile } from "./bindings.ts";
 import { createInClusterKube } from "./kube.ts";
 import { createNetworkCheck } from "./network-check.ts";
 import { createStore } from "./store.ts";
+import { LOG_BUDGET, validateLogBudget } from "../runner/engine.ts";
 
 const env = (name: string, fallback?: string) => {
   const v = process.env[name] ?? fallback;
@@ -106,6 +107,11 @@ const admission = createAdmissionCheck({
   config: { namespace, runnerImage, runnerServiceAccount, executorPodLabels, isolation, policyName: env("GHA_EMERGENCY_ADMISSION_POLICY"), maxAgeMs: 900_000, retryMs: 30_000 },
 });
 const bindingsFile = env("GHA_EMERGENCY_BINDINGS_FILE", "/etc/gha-emergency-bindings/bindings.json");
+// Security review F4/M6: reject a malformed, non-finite, zero, negative or unreasonable log budget at startup, so the
+// executor fails closed with a clear diagnostic instead of creating Jobs whose runner can't enforce the limit.
+const maxStepLogBytes = Number(env("GHA_EMERGENCY_MAX_STEP_LOG_BYTES", String(LOG_BUDGET.defaultStepBytes)));
+const maxLogBytes = Number(env("GHA_EMERGENCY_MAX_LOG_BYTES", String(LOG_BUDGET.defaultExecutionBytes)));
+validateLogBudget(maxStepLogBytes, maxLogBytes);
 const api = createApi({
   network,
   admission,
@@ -124,6 +130,10 @@ const api = createApi({
     isolation,
     resources: { cpu: env("GHA_EMERGENCY_RUNNER_CPU", "1"), memory: env("GHA_EMERGENCY_RUNNER_MEMORY", "1Gi"), scratch: env("GHA_EMERGENCY_RUNNER_SCRATCH", "2Gi") },
     maxMinutes: Number(env("GHA_EMERGENCY_MAX_MINUTES", "60")),
+    // Security review M6/F4: characters of workflow log output the runner forwards, per step and per execution
+    // (validated just above, so the executor fails closed on a bad value rather than creating unenforceable Jobs).
+    maxStepLogBytes,
+    maxLogBytes,
     maxConcurrent: Number(env("GHA_EMERGENCY_MAX_CONCURRENT", "2")),
     ttlSecondsAfterFinished: Number(env("GHA_EMERGENCY_JOB_TTL_SECONDS", "86400")),
     operatorSecret,

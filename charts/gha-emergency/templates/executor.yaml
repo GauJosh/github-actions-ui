@@ -34,8 +34,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: executor
-          image: "{{ .Values.executor.image.repository }}:{{ .Values.executor.image.tag }}"
-          imagePullPolicy: {{ .Values.executor.image.pullPolicy }}
+          # Security review M7: the executor image by digest (immutable), never a mutable tag. See _helpers.tpl.
+          image: {{ include "gha-emergency.executorImage" . | quote }}
+          imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -88,6 +89,10 @@ spec:
               value: {{ .Values.runner.resources.scratch | quote }}
             - name: GHA_EMERGENCY_MAX_MINUTES
               value: {{ .Values.runner.maxMinutes | quote }}
+            - name: GHA_EMERGENCY_MAX_STEP_LOG_BYTES
+              value: {{ .Values.runner.maxStepLogBytes | quote }}
+            - name: GHA_EMERGENCY_MAX_LOG_BYTES
+              value: {{ .Values.runner.maxLogBytes | quote }}
             - name: GHA_EMERGENCY_MAX_CONCURRENT
               value: {{ .Values.runner.maxConcurrent | quote }}
             - name: GHA_EMERGENCY_JOB_TTL_SECONDS

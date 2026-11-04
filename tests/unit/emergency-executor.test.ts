@@ -184,6 +184,8 @@ async function setup(opts: SetupOptions = {}) {
       isolation: { mode: "colocated" as const },
       resources: { cpu: "1", memory: "1Gi", scratch: "2Gi" },
       maxMinutes: 30,
+      maxStepLogBytes: 1024 * 1024,
+      maxLogBytes: 4 * 1024 * 1024,
       maxConcurrent: opts.maxConcurrent ?? 2,
       ttlSecondsAfterFinished: 3600,
       operatorSecret: OPERATOR_SECRET,
@@ -940,6 +942,8 @@ const jobInput = {
   isolation: { mode: "colocated" as const },
   resources: { cpu: "500m", memory: "512Mi", scratch: "1Gi" },
   maxMinutes: 20,
+  maxStepLogBytes: 1024 * 1024,
+  maxLogBytes: 4 * 1024 * 1024,
   ttlSecondsAfterFinished: 600,
 };
 

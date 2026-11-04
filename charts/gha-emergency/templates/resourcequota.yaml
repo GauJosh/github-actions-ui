@@ -1,0 +1,36 @@
+{{- /*
+Security review L1. A ResourceQuota is the hard backstop behind the executor's concurrency check: the check counts
+running executions before creating a Job (deploy/emergency/executor/api.ts) and can race, so two starts could be
+admitted at once. This quota makes the API server, not the check, the final limit on how many pods (and how much
+CPU/memory) run concurrently in the dedicated namespace. It tracks pods — not Jobs — so finished Job pods (terminal)
+and Jobs lingering until their ttlSecondsAfterFinished never consume it; only concurrently running pods do. It is
+namespaced, so it affects only this release's namespace. Fails the install (fail closed) on a configuration that
+could not hold the legitimate workload, rather than installing a quota that silently refuses normal executions.
+*/ -}}
+{{- if .Values.resourceQuota.enabled }}
+{{- $q := .Values.resourceQuota }}
+{{- $extra := int $q.extraPods }}
+{{- if lt $extra 2 }}{{ fail "resourceQuota.extraPods must be at least 2 (a network check runs a probe pod and a control pod); security review L1" }}{{ end }}
+{{- $concurrent := int .Values.runner.maxConcurrent }}
+{{- if lt $concurrent 1 }}{{ fail "runner.maxConcurrent must be at least 1" }}{{ end }}
+{{- /* 1 executor + the concurrent runner pods + headroom for the canary and a rolling executor. */}}
+{{- $pods := add 1 $concurrent $extra }}
+{{- range $k := list "requestsCpu" "requestsMemory" "limitsCpu" "limitsMemory" }}
+{{- if not (index $q $k) }}{{ fail (printf "resourceQuota.%s is required when resourceQuota.enabled (security review L1)" $k) }}{{ end }}
+{{- end }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  hard:
+    # Concurrent (non-terminal) pods: the executor, the running runner pods, and headroom. Caps the concurrency race.
+    pods: {{ $pods | quote }}
+    requests.cpu: {{ $q.requestsCpu | quote }}
+    requests.memory: {{ $q.requestsMemory | quote }}
+    limits.cpu: {{ $q.limitsCpu | quote }}
+    limits.memory: {{ $q.limitsMemory | quote }}
+{{- end }}

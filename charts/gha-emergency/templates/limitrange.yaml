@@ -1,0 +1,32 @@
+{{- /*
+Security review L1. A LimitRange for the dedicated namespace. Its per-container max equals the runner's resource cap
+(runner.resources), so it matches — and never conflicts with — the admission policy that pins runner Jobs to the same
+cap (security review H4): anything the policy admits is within this max, and the executor (0.5 CPU / 512Mi) is well
+under it. The default and defaultRequest only apply to a container that omits its own request/limit; the executor,
+runner and canary all set theirs, so these never change a governed pod — they are a safety net so that a stray pod
+can't sit in the namespace unbounded (and, with the ResourceQuota requiring CPU/memory requests and limits, can't be
+admitted without them). Namespaced, so it affects only this release's namespace.
+*/ -}}
+{{- if .Values.limitRange.enabled }}
+{{- $l := .Values.limitRange }}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "gha-emergency.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gha-emergency.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      # The ceiling a single container may request/limit: the runner's cap, matching the admission policy (H4).
+      max:
+        cpu: {{ .Values.runner.resources.cpu | quote }}
+        memory: {{ .Values.runner.resources.memory | quote }}
+      default:
+        cpu: {{ $l.defaultLimitCpu | quote }}
+        memory: {{ $l.defaultLimitMemory | quote }}
+      defaultRequest:
+        cpu: {{ $l.defaultRequestCpu | quote }}
+        memory: {{ $l.defaultRequestMemory | quote }}
+{{- end }}

@@ -101,6 +101,8 @@ const config = {
   isolation: JSON.parse(env.GHA_EMERGENCY_RUNNER_ISOLATION!) as RunnerIsolation,
   resources: { cpu: env.GHA_EMERGENCY_RUNNER_CPU!, memory: env.GHA_EMERGENCY_RUNNER_MEMORY!, scratch: env.GHA_EMERGENCY_RUNNER_SCRATCH! },
   maxMinutes: Number(env.GHA_EMERGENCY_MAX_MINUTES),
+  maxStepLogBytes: Number(env.GHA_EMERGENCY_MAX_STEP_LOG_BYTES ?? 1024 * 1024),
+  maxLogBytes: Number(env.GHA_EMERGENCY_MAX_LOG_BYTES ?? 4 * 1024 * 1024),
   ttlSecondsAfterFinished: Number(env.GHA_EMERGENCY_JOB_TTL_SECONDS),
 };
 const bound = bindings.find((b) => !args.snapshot || b.snapshots.includes(args.snapshot));

@@ -27,7 +27,7 @@ policy is enforced before any execution (deploy/emergency/executor/admission-che
 {{- /* Must match job-spec.ts (RUNNER_NODE, buildJob and buildCanaryJob); tools/emergency/admission-check.ts tests both. */}}
 {{- $execCommand := list "/usr/local/libexec/gha-emergency-runner-node" "--disable-sigusr1" "--disable-warning=ExperimentalWarning" "/app/deploy/emergency/runner/main.ts" }}
 {{- $canaryCommand := list "node" "--disable-warning=ExperimentalWarning" "/app/deploy/emergency/runner/canary.ts" }}
-{{- $execEnv := list "GHA_EMERGENCY_EXECUTION" "GHA_EMERGENCY_SNAPSHOT_DIR" "GHA_EMERGENCY_WORK_DIR" "GHA_EMERGENCY_SECRETS_DIR" "GHA_EMERGENCY_MAX_MINUTES" "GHA_EMERGENCY_NETWORK_PROBE" }}
+{{- $execEnv := list "GHA_EMERGENCY_EXECUTION" "GHA_EMERGENCY_SNAPSHOT_DIR" "GHA_EMERGENCY_WORK_DIR" "GHA_EMERGENCY_SECRETS_DIR" "GHA_EMERGENCY_MAX_MINUTES" "GHA_EMERGENCY_MAX_STEP_LOG_BYTES" "GHA_EMERGENCY_MAX_LOG_BYTES" "GHA_EMERGENCY_NETWORK_PROBE" }}
 {{- $canaryEnv := list "GHA_EMERGENCY_CANARY_TARGETS" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy

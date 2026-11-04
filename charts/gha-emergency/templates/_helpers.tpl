@@ -33,6 +33,21 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- printf "%s@%s" .Values.runner.image.repository $digest }}
 {{- end }}
 
+{{/*
+The executor image by digest (security review M7). The executor is the privileged component: it creates runner Jobs,
+holds the service-account token and reads snapshots. A mutable tag (e.g. :local) with imagePullPolicy IfNotPresent
+lets the content behind that tag change, or a stale/pre-planted image already cached under the name run, so what the
+privileged executor runs is not fixed. Pinning it to an immutable digest removes both (a digest is content-addressed,
+so IfNotPresent is safe). Fails the install (fail closed) when no valid digest is given.
+*/}}
+{{- define "gha-emergency.executorImage" -}}
+{{- $digest := toString .Values.executor.image.digest }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $digest) }}
+{{- fail "executor.image.digest must be the executor image's digest (sha256:<64 hex digits>): the privileged executor is pinned to it so a mutable tag can't change what it runs (security review M7)" }}
+{{- end }}
+{{- printf "%s@%s" .Values.executor.image.repository $digest }}
+{{- end }}
+
 {{/* The cluster-scoped admission policy and binding, named after the release and its namespace (security review H4). */}}
 {{- define "gha-emergency.admissionPolicy" -}}
 {{- printf "%s-runner-jobs.%s" (include "gha-emergency.fullname" .) .Release.Namespace }}
